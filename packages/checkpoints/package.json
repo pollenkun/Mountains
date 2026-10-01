@@ -1,0 +1,11 @@
+{
+  "name": "@mountains/checkpoints",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {},
+  "license": "Apache-2.0"
+}

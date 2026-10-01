@@ -1,0 +1,29 @@
+{
+  "model": "deepseek-flash",
+  "thinking": {
+    "enabled": true,
+    "effort": "high"
+  },
+  "maxTokens": 2048,
+  "limits": {
+    "maxTurns": 10,
+    "maxCost": 1,
+    "maxRequests": 12,
+    "maxDurationMs": 120000
+  },
+  "requestGuard": true,
+  "approval": {
+    "rules": [
+      {
+        "id": "allow-read-only",
+        "decision": "allow",
+        "risks": [
+          "read-only"
+        ]
+      }
+    ],
+    "fallback": "deny"
+  },
+  "modelApproval": null,
+  "checkpoints": false
+}

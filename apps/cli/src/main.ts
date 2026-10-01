@@ -1,0 +1,279 @@
+#!/usr/bin/env node
+/**
+ * Mountains CLI。
+ *   mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>]
+ *                 [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]
+ *   mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]
+ *
+ * 退出码：0 完成；1 失败；2 用法错误；3 达到限制（轮数/预算/token）；130 用户取消。
+ * Key 只从环境变量读取（按模型的供应商：DEEPSEEK_API_KEY、ZHIPU_API_KEY、MOONSHOT_API_KEY）。base URL 指向本机兼容代理时，
+ * 代理负责注入鉴权，本进程不需要 Key。
+ */
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { parseArgs } from "node:util";
+import type { EngineEvent } from "@mountains/protocol";
+import { AgentSession, BudgetGuard, type RunSummary, replayAdapterFromRecording } from "@mountains/engine";
+import { ApprovalChatAdapter, ChatCompletionsAdapter, currencyOf, type ModelAdapter, providerOf } from "@mountains/providers";
+import { MemoryStore, memoryFileFor, QueryRecipeStore, recipeFileFor, renderMemory, verifyMemory, Workspace } from "@mountains/tools";
+import { loadConfig } from "./config.ts";
+
+const EXIT = { completed: 0, failed: 1, usage: 2, limit: 3, cancelled: 130 } as const;
+
+function usage(msg?: string): never {
+	if (msg) process.stderr.write(`错误：${msg}\n`);
+	process.stderr.write(
+		"用法：\n  mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>] [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]\n" +
+			"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n",
+	);
+	process.exit(EXIT.usage);
+}
+
+function expandHome(p: string): string {
+	return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+}
+
+function requireExternalStorage(path: string, workspace: string): string {
+	const dest = resolve(path);
+	let ancestor = dest;
+	while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+	const real = resolve(realpathSync(ancestor), relative(ancestor, dest));
+	if (real === workspace || real.startsWith(workspace + sep)) throw new Error("项目记忆与原文档案必须存放在任务工作区之外");
+	return dest;
+}
+
+function isLoopback(url: string): boolean {
+	try {
+		const h = new URL(url).hostname;
+		return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+	} catch {
+		return false;
+	}
+}
+
+interface Common {
+	workspace: string;
+	outDir: string;
+	json: boolean;
+}
+
+function eventSink(outDir: string, json: boolean): (e: EngineEvent) => void {
+	const eventsPath = join(outDir, "events.jsonl");
+	return (e) => {
+		if (e.type !== "message.delta") appendFileSync(eventsPath, `${JSON.stringify(e)}\n`);
+		if (json) return;
+		// 人类可读的进度（stderr），不影响 stdout 的最终结果
+		if (e.type === "tool.requested") process.stderr.write(`· ${e.tool} ${typeof e.args === "string" ? e.args : JSON.stringify(e.args).slice(0, 160)}\n`);
+		else if (e.type === "tool.completed") process.stderr.write(`  ${e.ok ? "✓" : "✗"} ${e.summary.slice(0, 160)} (${e.durationMs}ms)\n`);
+		else if (e.type === "usage") process.stderr.write(`  [usage] 命中 ${e.usage.cacheRead ?? "?"} 未命中 ${e.usage.input ?? "?"} 输出 ${e.usage.output ?? "?"} ≈${e.cost?.toFixed(5) ?? "?"} ${e.currency}\n`);
+		else if (e.type === "error") process.stderr.write(`! ${e.message}\n`);
+	};
+}
+
+async function runWithSignals(session: AgentSession, task: string): Promise<RunSummary> {
+	const ac = new AbortController();
+	let interrupts = 0;
+	const onSig = () => {
+		interrupts++;
+		if (interrupts === 1) {
+			process.stderr.write("\n收到中断，正在取消（再按一次强制退出）\n");
+			ac.abort();
+		} else process.exit(EXIT.cancelled);
+	};
+	process.on("SIGINT", onSig);
+	process.on("SIGTERM", onSig);
+	try {
+		return await session.run(task, ac.signal);
+	} finally {
+		process.off("SIGINT", onSig);
+		process.off("SIGTERM", onSig);
+	}
+}
+
+function finish(summary: RunSummary, outDir: string, json: boolean, extra: Record<string, unknown>): never {
+	const out = { ...summary, ...extra, outDir };
+	writeFileSync(join(outDir, "summary.json"), `${JSON.stringify(out, null, 2)}\n`);
+	if (json) process.stdout.write(`${JSON.stringify(out)}\n`);
+	else {
+		process.stdout.write(`${summary.finalText}\n`);
+		process.stderr.write(
+			`\n[${summary.status}] ${summary.reason}；${summary.turns} 轮，${summary.totals.requests} 次请求，命中 ${summary.totals.cacheRead} / 未命中 ${summary.totals.input} / 输出 ${summary.totals.output}，估算 ${summary.totals.cost.toFixed(5)} ${summary.totals.currency}；结果目录 ${outDir}\n`,
+		);
+	}
+	process.exit(EXIT[summary.status]);
+}
+
+async function cmdRun(argv: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args: argv,
+		options: {
+			task: { type: "string" },
+			"task-file": { type: "string" },
+			workspace: { type: "string" },
+			config: { type: "string" },
+			json: { type: "boolean", default: false },
+			out: { type: "string" },
+			"run-id": { type: "string" },
+			"base-url": { type: "string" },
+			"spend-ledger": { type: "string" },
+		},
+		strict: true,
+	});
+	if (!values.workspace) usage("缺少 --workspace");
+	if (!values.task === !values["task-file"]) usage("--task 与 --task-file 必须且只能给一个");
+	const task = values.task ?? readFileSync(values["task-file"] as string, "utf8");
+	const loaded = loadConfig(values.config ? resolve(values.config) : null, values["base-url"] ? { baseUrl: values["base-url"] } : {});
+	const cfg = loaded.config;
+	const runId = values["run-id"] ?? `run_${randomUUID().slice(0, 12)}`;
+	const outDir = resolve(values.out ?? join(expandHome("~/.mountains/runs"), runId));
+	mkdirSync(outDir, { recursive: true });
+
+	let apiKey = process.env[cfg.apiKeyEnv];
+	if (!apiKey) {
+		if (isLoopback(cfg.baseUrl)) apiKey = "proxy-injected";
+		else usage(`环境变量 ${cfg.apiKeyEnv} 未设置（Key 只从环境变量读取）`);
+	}
+	const provider = providerOf(cfg.model);
+	const adapter = new ChatCompletionsAdapter({ baseUrl: cfg.baseUrl, apiKey, ...(provider ? { provider } : {}) });
+	let modelApproval;
+	if (cfg.modelApproval) {
+		const settings = cfg.modelApproval;
+		let approvalKey = process.env[settings.apiKeyEnv];
+		if (!approvalKey) {
+			if (isLoopback(settings.baseUrl)) approvalKey = "proxy-injected";
+			else usage(`审批模型环境变量 ${settings.apiKeyEnv} 未设置（不会复用主模型 Key）`);
+		}
+		modelApproval = { settings, adapter: new ApprovalChatAdapter({
+			baseUrl: settings.baseUrl, apiKey: approvalKey, profile: settings.profile, timeoutMs: settings.timeoutMs,
+			...(settings.supportedEfforts ? { supportedEfforts: settings.supportedEfforts } : {}),
+			...(settings.effortMapping ? { effortMapping: settings.effortMapping } : {}),
+			...(settings.maxTokensField ? { maxTokensField: settings.maxTokensField } : {}),
+			...(settings.disabledReasoningEffort ? { disabledReasoningEffort: settings.disabledReasoningEffort } : {}),
+		}) };
+	}
+	const userId = cfg.userIdMode === "per-run" ? `mtn-${runId}` : cfg.userIdMode === "fixed" ? cfg.userIdFixed : undefined;
+	const budget = BudgetGuard.fromEnv(resolve(expandHome(values["spend-ledger"] ?? cfg.spendLedger)), currencyOf(cfg.model) ?? "USD");
+	const ws = new Workspace(resolve(values.workspace));
+	// 记忆：会话开始时机械校验证据，只把仍然成立的笔记作为事实注入（一次组装，属于稳定前缀）
+	let memoryStore: MemoryStore | undefined;
+	let memoryText: string | null = null;
+	if (cfg.memory.enabled) {
+		memoryStore = new MemoryStore(requireExternalStorage(memoryFileFor(ws.root), ws.root));
+		try {
+		const verified = verifyMemory(ws, memoryStore.entries(), { strict: cfg.memory.verifiedFacts });
+		memoryText = renderMemory(verified, { maxNotes: cfg.memory.maxNotes, maxChars: cfg.memory.maxChars });
+		writeFileSync(
+			join(outDir, "memory.json"),
+			`${JSON.stringify(
+				{
+					file: memoryStore.file,
+					valid: verified.valid.map((v) => ({ id: v.entry.id, checks: v.checks.map((c) => c.status) })),
+					stale: verified.stale.map((v) => ({ id: v.entry.id, checks: v.checks.map((c) => c.status) })),
+					injectedChars: memoryText?.length ?? 0,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		} catch {
+			memoryStore = undefined;
+			memoryText = "Project memory is unavailable because its stored records could not be verified. Use current files; do not rely on earlier remembered values.";
+			writeFileSync(join(outDir, "memory.json"), JSON.stringify({ status: "disabled-invalid-store", injectedChars: memoryText.length }) + "\n");
+			process.stderr.write("项目记忆无法校验，已停用记忆存取；本次运行会记录此故障。\n");
+		}
+	}
+	let recipes: QueryRecipeStore | undefined;
+	if (cfg.tools.queryPlans) {
+		recipes = new QueryRecipeStore(requireExternalStorage(recipeFileFor(ws.root), ws.root));
+		try {
+			const entries = recipes.entries(ws.root);
+			if (entries.length) {
+				const list = entries.slice(-8).map((r) => `${r.id}: ${r.name}`).join("\n");
+				memoryText = [memoryText, `Saved query methods (descriptions, not facts):\n${list}\nUse query_recipe to replay a relevant method against current files. Applicability is checked on replay; previous answers are never reused.`].filter(Boolean).join("\n\n");
+			}
+			writeFileSync(join(outDir, "recipes.json"), JSON.stringify({ status: "available", count: entries.length }) + "\n");
+		} catch {
+			recipes = undefined;
+			writeFileSync(join(outDir, "recipes.json"), JSON.stringify({ status: "disabled-invalid-store" }) + "\n");
+			memoryText = [memoryText, "Saved query methods are unavailable. Build a fresh query_plan against current files."].filter(Boolean).join("\n\n");
+		}
+	}
+	const session = new AgentSession({
+		workspace: resolve(values.workspace),
+		dataDir: outDir,
+		adapter,
+		model: cfg.model,
+		thinking: cfg.thinking,
+		maxTokens: cfg.maxTokens,
+		limits: cfg.limits,
+		retry: cfg.retry,
+		masking: cfg.masking,
+		verbatimToolArguments: cfg.verbatimToolArguments,
+		...(userId ? { userId } : {}),
+		systemPrompt: loaded.systemPrompt,
+		approval: cfg.approval,
+		requestGuard: cfg.requestGuard,
+		...(modelApproval ? { modelApproval } : {}),
+		budget,
+		runId,
+		checkpoints: cfg.checkpoints,
+		contextGuard: cfg.contextGuard,
+		...(cfg.contextGuard ? { archiveDir: requireExternalStorage(join(dirname(memoryFileFor(ws.root)), "blobs"), ws.root), archiveHistory: true } : {}),
+		toolOptions: { read: cfg.tools.read, outline: cfg.tools.outline, expand: cfg.tools.expand, archiveSearch: cfg.tools.archiveSearch,
+			search: { contextLines: cfg.tools.searchContextLines }, batchEdit: cfg.tools.batchEdit,
+			searchPath: cfg.tools.searchPath, codeLookup: cfg.tools.codeLookup, searchSymbols: cfg.tools.searchSymbols, leanOutput: cfg.tools.leanOutput,
+			queryPlans: cfg.tools.queryPlans, verifiedMemory: cfg.memory.verifiedFacts,
+			...(memoryStore ? { memory: memoryStore } : {}), ...(recipes ? { recipes } : {}) },
+		memory: memoryText,
+		onEvent: eventSink(outDir, values.json),
+	});
+	writeFileSync(join(outDir, "config.json"), `${JSON.stringify({ source: loaded.source, sha256: loaded.sha256, config: cfg }, null, 2)}\n`);
+	const summary = await runWithSignals(session, task);
+	finish(summary, outDir, values.json, {
+		configSha256: loaded.sha256,
+		approvalRules: cfg.approval.rules.map((r) => r.id),
+		budget: { globalLimit: budget.globalLimit, globalSpent: budget.globalSpent, currency: budget.currency },
+	});
+}
+
+async function cmdReplay(argv: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args: argv,
+		options: { recording: { type: "string" }, workspace: { type: "string" }, out: { type: "string" }, json: { type: "boolean", default: false } },
+		strict: true,
+	});
+	if (!values.recording || !values.workspace) usage("replay 需要 --recording 与 --workspace");
+	const lines = readFileSync(values.recording, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; data: Record<string, unknown> });
+	const meta = lines.find((l) => l.kind === "meta")?.data ?? {};
+	const input = lines.find((l) => l.kind === "user.input")?.data;
+	if (!input) usage("录制文件中没有 user.input");
+	const outDir = resolve(values.out ?? join(expandHome("~/.mountains/replays"), `replay_${randomUUID().slice(0, 8)}`));
+	mkdirSync(outDir, { recursive: true });
+	const adapter: ModelAdapter = replayAdapterFromRecording(values.recording);
+	const session = new AgentSession({
+		workspace: resolve(values.workspace),
+		dataDir: outDir,
+		adapter,
+		model: String(meta.model ?? "deepseek-flash"),
+		thinking: (meta.thinking as { enabled: boolean; effort: "high" }) ?? { enabled: true, effort: "high" },
+		maxTokens: Number(meta.maxTokens ?? 32000),
+		// 回放不花钱：独立的临时台账
+		budget: new BudgetGuard({ globalLimit: 1e9, currency: currencyOf(String(meta.model ?? "deepseek-flash")) ?? "USD", ledgerPath: join(outDir, "replay-spend.jsonl") }),
+		retry: { maxAttempts: 1, baseDelayMs: 0 },
+		onEvent: eventSink(outDir, values.json),
+	});
+	const summary = await runWithSignals(session, String(input.task));
+	finish(summary, outDir, values.json, { replayOf: resolve(values.recording), note: "离线回放只模拟模型输出，不能作为成功率或缓存证据" });
+}
+
+const [cmd, ...rest] = process.argv.slice(2);
+try {
+	if (cmd === "run") await cmdRun(rest);
+	else if (cmd === "replay") await cmdReplay(rest);
+	else usage(cmd ? `未知命令 ${cmd}` : undefined);
+} catch (err) {
+	process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+	process.exit(EXIT.failed);
+}

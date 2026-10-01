@@ -1,0 +1,26 @@
+{
+  "name": "mountains",
+  "private": true,
+  "type": "module",
+  "description": "A cache-aware coding agent engine and single-task CLI.",
+  "workspaces": [
+    "packages/*",
+    "apps/cli"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec \"packages/*/test/**/*.test.ts\" \"apps/cli/test/**/*.test.ts\"",
+    "check:deps": "node scripts/check-deps.ts",
+    "check": "npm run typecheck && npm run check:deps && npm test",
+    "mountains": "node apps/cli/src/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "6.0.3"
+  },
+  "version": "0.0.0",
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,21 @@
+{
+  "model": "deepseek-flash",
+  "thinking": {
+    "enabled": true,
+    "effort": "high"
+  },
+  "maxTokens": 2048,
+  "limits": {
+    "maxTurns": 10,
+    "maxCost": 1,
+    "maxRequests": 12,
+    "maxDurationMs": 120000
+  },
+  "requestGuard": true,
+  "modelApproval": {
+    "model": "deepseek-flash",
+    "maxCost": 0.1,
+    "apiKeyEnv": "MOUNTAINS_APPROVAL_API_KEY"
+  },
+  "checkpoints": true
+}

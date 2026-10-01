@@ -1,0 +1,14 @@
+{
+  "name": "@mountains/providers",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mountains/protocol": "*",
+    "@earendil-works/pi-ai": "0.87.1"
+  },
+  "license": "Apache-2.0"
+}
