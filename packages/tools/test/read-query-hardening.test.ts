@@ -175,7 +175,7 @@ test("narrow query inventories exclude unrelated output without overriding ignor
 
 test("literal inventory type filters preserve unusual basenames and nested glob membership", async t => {
 	const { root, ctx } = setup(t); mkdirSync(join(root, "src")); mkdirSync(join(root, "other"));
-	for (const name of ["a[1].txt", "café.txt", "ends .txt", "brace{a}.txt", "target.txt", ...(process.platform === "win32" ? [] : ["include:txt", "trailing "])]) {
+	for (const name of ["a[1].txt", "café.txt", "ends .txt", "brace{a}.txt", "target.txt", ...(process.platform === "win32" ? [] : ["include:txt", "trailing ", "star*.txt", "question?.txt", "backslash\\name.txt"])]) {
 		writeFileSync(join(root, "src", name), "needle\n");
 		const result = await createPlanTool().execute({ steps: [{ id: "find", op: "search", path: `src/${name}`, pattern: "needle" }] }, ctx);
 		assert.equal(result.ok, true, result.modelContent); assert.match(result.modelContent, /needle/);
@@ -242,4 +242,36 @@ test("literal file and directory scopes prune unrelated same-name candidates whi
 		assert.equal(result.ok, true, result.modelContent); assert.equal(result.details.scannedFiles, 0);
 		assert.doesNotMatch(result.modelContent, /needle/);
 	}
+});
+
+test("literal type inventories use portable singleton classes and remain bounded with metacharacters", async t => {
+	const { root, parent, ctx } = setup(t); execFileSync("git", ["init", "-q"], { cwd: root });
+	const names = ["a[1].ts", "brace{a}.ts", "open[.ts", "close].ts", "[[braces{}]].ts"];
+	for (const name of [...names, "a1.ts", "bracea.ts", "open.ts", "close.ts"]) writeFileSync(join(root, name), "needle\n");
+	for (let i = 0; i < 1500; i++) writeFileSync(join(root, `unrelated_${String(i).padStart(4, "0")}_${"x".repeat(170)}.ts`), "");
+	const log = join(parent, "type-globs.jsonl"), wrapper = join(parent, "rg-portable-type-globs.cjs"); useNodeFixture(t, wrapper);
+	writeFileSync(wrapper, `const fs=require('node:fs'),cp=require('node:child_process');const args=process.argv.slice(2);
+for(let i=0;i<args.length;i++)if(args[i]==='--type-add'){
+ fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args[i+1])+'\\n');
+ // globset's Windows type-glob default treats backslashes as path separators.
+ // This semantic shim makes accidental backslash escapes fail on POSIX as well.
+ args[i+1]=args[i+1].replace(/\\\\/g,'/');
+}
+const result=cp.spawnSync('rg',args,{input:fs.readFileSync(0),encoding:'utf8',maxBuffer:8*1024*1024});
+process.stdout.write(result.stdout||'');process.stderr.write(result.stderr||'');process.exit(result.status??2);`, { mode: 0o700 });
+	const previous = process.env.MOUNTAINS_RG; process.env.MOUNTAINS_RG = wrapper;
+	t.after(() => { if (previous === undefined) delete process.env.MOUNTAINS_RG; else process.env.MOUNTAINS_RG = previous; });
+	for (const path of names) {
+		const result = await createPlanTool().execute({ steps: [{ id: "find", op: "search", path, pattern: "needle" }] }, ctx);
+		assert.equal(result.ok, true, result.modelContent);
+		assert.deepEqual((result.details.steps as { paths: string[] }[])[0]!.paths, [path]);
+		assert.equal(result.details.scannedFiles, 1); assert.ok(Number(result.details.processBytes) < 4096);
+	}
+	const definitions = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string);
+	assert.ok(definitions.includes("mountainsquery:a[[]1[]].ts"));
+	assert.ok(definitions.includes("mountainsquery:brace[{]a[}].ts"));
+	assert.equal(definitions.some(definition => definition.includes("\\")), false);
+	writeFileSync(join(root, ".gitignore"), "a[[]1].ts\n");
+	const ignored = await createPlanTool().execute({ steps: [{ id: "find", op: "search", path: "a[1].ts", pattern: "needle" }] }, ctx);
+	assert.equal(ignored.ok, true, ignored.modelContent); assert.equal(ignored.details.scannedFiles, 0);
 });

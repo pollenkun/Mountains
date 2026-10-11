@@ -250,7 +250,9 @@ function inventoryTypeGlobs(patterns: string[], scope?: LiteralScope): string[] 
 		const name = basename(scope.path);
 		// rg type definitions reserve colons and trim surrounding whitespace.
 		if (name.includes(":") || name.trim() !== name || /[\r\n]/.test(name)) return [];
-		return [name.replace(/[\\*?{}[\]]/g, "\\$&")];
+		// Type globs disable backslash escaping on Windows, where \\ is a separator.
+		// Singleton classes are literal under both globset platform defaults.
+		return [name.replace(/[\\*?{}[\]]/g, character => `[${character}]`)];
 	}
 	if (scope) return [];
 	const globs: string[] = [];
