@@ -77,7 +77,7 @@ Six tools: `query_plan` (search, list and read files in one call), `file_read`, 
 
 Requires Node.js 22.19 or later, npm, Git, and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`). Git stores file checkpoints.
 
-This update adds Linux and Windows compatibility. CI is set up for all three systems, each with Node.js 22.19 and 24. macOS passes. Linux and Windows need another CI run after this round of fixes.
+This update adds Linux and Windows compatibility. CI is set up for all three systems, each with Node.js 22.19 and 24. All six CI jobs pass.
 
 - **Linux, macOS:** Bash is also required. Minimal Linux images may need it installed separately; process cleanup needs access to `/proc` on Linux.
 - **Windows 10/11:** install Git for Windows, including Git Bash, and keep the built-in Windows PowerShell available. Start from PowerShell, cmd, or Git Bash.

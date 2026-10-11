@@ -77,7 +77,7 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 需要 Node.js 22.19 或更高版本、npm、Git，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。Git 用来保存文件检查点。
 
-这次补了 Linux 和 Windows 的兼容。CI 配了三个系统，每个系统都检查 Node.js 22.19 和 24。macOS 已通过；Linux 和 Windows 这轮修复后还需要 CI 复测。
+这次补了 Linux 和 Windows 的兼容。CI 配了三个系统，每个系统都检查 Node.js 22.19 和 24。这六项 CI 已通过。
 
 - **Linux、macOS：** 还需要 Bash。精简 Linux 镜像可能没有自带，需要另装；Linux 的进程清理要能读取 `/proc`。
 - **Windows 10/11：** 安装 Git for Windows，包含 Git Bash，并保留系统自带的 Windows PowerShell。可以从 PowerShell、cmd 或 Git Bash 启动。
