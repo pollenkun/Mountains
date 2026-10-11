@@ -24,7 +24,7 @@ export function inspectRepositoryBrief(workspace: Workspace): RepositoryBrief {
 				const entry = dir.readSync();
 				if (!entry) break;
 				if (++scanned > REPOSITORY_BRIEF_LIMITS.scannedEntries) { rootComplete = false; omittedEntries++; break; }
-				if ([".git", ".mountains", ".codex-work", "node_modules"].includes(entry.name)) continue;
+				if ([".git", ".mountains", "node_modules"].includes(entry.name)) continue;
 				if (Buffer.byteLength(entry.name) > REPOSITORY_BRIEF_LIMITS.nameBytes) { omittedEntries++; continue; }
 				rootEntries.push(entry.name + (entry.isDirectory() ? "/" : entry.isSymbolicLink() ? "@" : ""));
 			}

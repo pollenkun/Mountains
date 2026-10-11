@@ -10,29 +10,7 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 同一个模型（DeepSeek V4.1 Flash，思考强度 high），同样 12 道真实仓库的修 bug 题，每题跑 2 次，共 24 次。
 
-```mermaid
-xychart-beta
-    title "做对的次数（共 24 次）"
-    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
-    y-axis "次数" 0 --> 24
-    bar [19, 19, 19, 20]
-```
-
-```mermaid
-xychart-beta
-    title "24 次的总花费（元）"
-    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
-    y-axis "元" 0 --> 7
-    bar [3.72, 3.98, 4.68, 6.68]
-```
-
-```mermaid
-xychart-beta
-    title "24 次的总用时（分钟）"
-    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
-    y-axis "分钟" 0 --> 120
-    bar [50.4, 65.1, 72.0, 115.3]
-```
+![做对次数、总花费、总用时对比](assets/benchmark-zh.svg)
 
 | 系统 | 版本 | 做对 | 花费（元） | 用时（分钟） |
 |---|---|---|---|---|

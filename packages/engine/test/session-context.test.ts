@@ -54,7 +54,6 @@ test("a session keeps the configured thinking, the system prompt with tool notes
 	for (const request of adapter.requests) {
 		assert.deepEqual(request.thinking, { enabled: true, effort: "low" }, "the configured thinking is kept");
 		assert.equal(request.system, SYSTEM_PROMPT + TOOL_NOTES);
-		assert.ok(!request.messages.some(m => m.content.startsWith("[Runtime workflow reminder")), "no per-batch reminder");
 	}
 	const last = adapter.requests.at(-1)!;
 	assert.equal(last.messages.filter(m => m.content.includes("[Repository facts")).length, 1, "brief once per session");

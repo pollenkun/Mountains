@@ -10,29 +10,7 @@ Preview 1 is a technical experiment, not an everyday tool: there is no interacti
 
 One model (DeepSeek V4.1 Flash, reasoning effort high), the same 12 bug-fix tasks from real repositories, 2 runs per task, 24 runs in total.
 
-```mermaid
-xychart-beta
-    title "Runs solved (out of 24)"
-    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
-    y-axis "Runs" 0 --> 24
-    bar [19, 19, 19, 20]
-```
-
-```mermaid
-xychart-beta
-    title "Total cost of 24 runs (CNY)"
-    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
-    y-axis "CNY" 0 --> 7
-    bar [3.72, 3.98, 4.68, 6.68]
-```
-
-```mermaid
-xychart-beta
-    title "Total time of 24 runs (minutes)"
-    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
-    y-axis "Minutes" 0 --> 120
-    bar [50.4, 65.1, 72.0, 115.3]
-```
+![Runs solved, total cost and total time](assets/benchmark-en.svg)
 
 | System | Version | Solved | Cost (CNY) | Time (min) |
 |---|---|---|---|---|

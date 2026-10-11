@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="540" viewBox="0 0 1500 540" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="1500" height="540" fill="#FFFFFF"/>
+<text x="250.0" y="58" text-anchor="middle" font-size="26" font-weight="600" fill="#202836">Runs solved (of 24)</text>
+<text x="250.0" y="96" text-anchor="middle" font-size="22" fill="#6A7380">Mountains: On par with the others</text>
+<line x1="56.0" y1="455.0" x2="476.0" y2="455.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="46.0" y="461.0" text-anchor="end" font-size="16" fill="#6A7380">0</text>
+<line x1="56.0" y1="310.0" x2="476.0" y2="310.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="46.0" y="316.0" text-anchor="end" font-size="16" fill="#6A7380">12</text>
+<line x1="56.0" y1="165.0" x2="476.0" y2="165.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="46.0" y="171.0" text-anchor="end" font-size="16" fill="#6A7380">24</text>
+<rect x="72.5" y="225.4" width="72" height="229.6" fill="#4C5FF0"/>
+<text x="108.5" y="215.4" text-anchor="middle" font-size="20" font-weight="700" fill="#4C5FF0">19</text>
+<text x="108.5" y="483" text-anchor="middle" font-size="16" font-weight="600" fill="#202836">Mountains</text>
+<rect x="177.5" y="225.4" width="72" height="229.6" fill="#BBC0C9"/>
+<text x="213.5" y="215.4" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">19</text>
+<text x="213.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">OpenCode</text>
+<rect x="282.5" y="225.4" width="72" height="229.6" fill="#BBC0C9"/>
+<text x="318.5" y="215.4" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">19</text>
+<text x="318.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">Pi</text>
+<rect x="387.5" y="213.3" width="72" height="241.7" fill="#BBC0C9"/>
+<text x="423.5" y="203.3" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">20</text>
+<text x="423.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">DeepSeek</text>
+<text x="423.5" y="503" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">Harness</text>
+<text x="750.0" y="58" text-anchor="middle" font-size="26" font-weight="600" fill="#202836">Total cost (CNY)</text>
+<text x="750.0" y="96" text-anchor="middle" font-size="22" fill="#167758">Mountains: Lowest</text>
+<line x1="556.0" y1="455.0" x2="976.0" y2="455.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="546.0" y="461.0" text-anchor="end" font-size="16" fill="#6A7380">0</text>
+<line x1="556.0" y1="310.0" x2="976.0" y2="310.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="546.0" y="316.0" text-anchor="end" font-size="16" fill="#6A7380">4</text>
+<line x1="556.0" y1="165.0" x2="976.0" y2="165.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="546.0" y="171.0" text-anchor="end" font-size="16" fill="#6A7380">8</text>
+<rect x="572.5" y="320.1" width="72" height="134.8" fill="#4C5FF0"/>
+<text x="608.5" y="310.1" text-anchor="middle" font-size="20" font-weight="700" fill="#4C5FF0">¥3.72</text>
+<text x="608.5" y="483" text-anchor="middle" font-size="16" font-weight="600" fill="#202836">Mountains</text>
+<rect x="677.5" y="310.7" width="72" height="144.3" fill="#BBC0C9"/>
+<text x="713.5" y="300.7" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">¥3.98</text>
+<text x="713.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">OpenCode</text>
+<rect x="782.5" y="285.4" width="72" height="169.6" fill="#BBC0C9"/>
+<text x="818.5" y="275.4" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">¥4.68</text>
+<text x="818.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">Pi</text>
+<rect x="887.5" y="212.9" width="72" height="242.1" fill="#BBC0C9"/>
+<text x="923.5" y="202.9" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">¥6.68</text>
+<text x="923.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">DeepSeek</text>
+<text x="923.5" y="503" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">Harness</text>
+<text x="1250.0" y="58" text-anchor="middle" font-size="26" font-weight="600" fill="#202836">Total time (minutes)</text>
+<text x="1250.0" y="96" text-anchor="middle" font-size="22" fill="#167758">Mountains: Lowest</text>
+<line x1="1056.0" y1="455.0" x2="1476.0" y2="455.0" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="1046.0" y="461.0" text-anchor="end" font-size="16" fill="#6A7380">0</text>
+<line x1="1056.0" y1="323.2" x2="1476.0" y2="323.2" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="1046.0" y="329.2" text-anchor="end" font-size="16" fill="#6A7380">60</text>
+<line x1="1056.0" y1="191.4" x2="1476.0" y2="191.4" stroke="#ECEEF2" stroke-width="1.5"/>
+<text x="1046.0" y="197.4" text-anchor="end" font-size="16" fill="#6A7380">120</text>
+<rect x="1072.5" y="344.3" width="72" height="110.7" fill="#4C5FF0"/>
+<text x="1108.5" y="334.3" text-anchor="middle" font-size="20" font-weight="700" fill="#4C5FF0">50.4</text>
+<text x="1108.5" y="483" text-anchor="middle" font-size="16" font-weight="600" fill="#202836">Mountains</text>
+<rect x="1177.5" y="312.0" width="72" height="143.0" fill="#BBC0C9"/>
+<text x="1213.5" y="302.0" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">65.1</text>
+<text x="1213.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">OpenCode</text>
+<rect x="1282.5" y="296.8" width="72" height="158.2" fill="#BBC0C9"/>
+<text x="1318.5" y="286.8" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">72.0</text>
+<text x="1318.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">Pi</text>
+<rect x="1387.5" y="201.7" width="72" height="253.3" fill="#BBC0C9"/>
+<text x="1423.5" y="191.7" text-anchor="middle" font-size="20" font-weight="400" fill="#202836">115.3</text>
+<text x="1423.5" y="483" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">DeepSeek</text>
+<text x="1423.5" y="503" text-anchor="middle" font-size="16" font-weight="400" fill="#6A7380">Harness</text>
+</svg>
