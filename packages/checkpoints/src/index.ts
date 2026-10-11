@@ -162,8 +162,10 @@ export class ShadowCheckpoints {
 			writeFileSync(abs, blob.content, { mode: blob.executable ? 0o777 : 0o666 });
 			if (process.platform !== "win32" && existingMode !== null) {
 				// Git records only executable/non-executable modes. Preserve the
-				// existing read/write permissions; new files respect the umask.
-				chmodSync(abs, (existingMode & 0o666) | (blob.executable ? 0o111 : 0));
+				// existing access scope: keep existing execute bits, or restore them
+				// only for classes already allowed to read. New files respect umask.
+				const execute = (existingMode & 0o111) || ((existingMode & 0o444) >> 2);
+				chmodSync(abs, (existingMode & 0o666) | (blob.executable ? execute : 0));
 			}
 			result.restored.push(p);
 		}

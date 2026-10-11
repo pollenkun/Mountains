@@ -73,6 +73,37 @@ describe("影子 Git 检查点", () => {
 		assert.equal(ck.snapshot().tree, executable.tree);
 	});
 
+	test("恢复可执行文件不扩大已有访问权限", { skip: process.platform === "win32" }, (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-private-mode-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace"); mkdirSync(ws);
+		const file = join(ws, "run.sh");
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		for (const mode of [0o700, 0o750, 0o755, 0o740]) {
+			writeFileSync(file, "#!/bin/sh\nprintf 'original\\n'\n"); chmodSync(file, mode);
+			const snapshot = ck.snapshot();
+			writeFileSync(file, "modified\n");
+			ck.restore(snapshot.tree, ["run.sh"]);
+			assert.equal(statSync(file).mode & 0o777, mode, "已有可执行权限保持不变");
+			if (mode !== 0o740) {
+				chmodSync(file, mode & 0o666);
+				ck.restore(snapshot.tree, ["run.sh"]);
+				assert.equal(statSync(file).mode & 0o777, mode, "仅给可读的权限组恢复可执行位");
+			}
+		}
+		const oldMask = process.umask(0o077);
+		try {
+			chmodSync(file, 0o700);
+			const snapshot = ck.snapshot();
+			writeFileSync(file, "modified privately\n");
+			ck.restore(snapshot.tree, ["run.sh"]);
+			assert.equal(statSync(file).mode & 0o777, 0o700);
+			rmSync(file);
+			ck.restore(snapshot.tree, ["run.sh"]);
+			assert.equal(statSync(file).mode & 0o777, 0o700, "重新创建时尊重限制性 umask");
+		} finally { process.umask(oldMask); }
+	});
+
 	test("跨平台路径分隔符、空格和 Unicode 文件名可往返恢复", (t) => {
 		const root = mkdtempSync(join(tmpdir(), "ckpt-paths-"));
 		t.after(() => rmSync(root, { recursive: true, force: true }));

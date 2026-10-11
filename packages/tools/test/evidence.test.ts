@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { BlobStore, createCommandTool, createExpandTool, EXPAND_MAX_BYTES, FileStateTracker, MAX_ARCHIVE_BYTES, sha256, type ToolContext, Workspace } from "../src/index.ts";
 
@@ -162,7 +162,7 @@ describe("immutable evidence", () => {
 		assert.equal(blobs.getBytes(ref), null);
 		assert.throws(() => blobs.put("original", { kind: "raw" }));
 		rmSync(file);
-		const parent = file.slice(0, file.lastIndexOf("/"));
+		const parent = dirname(file);
 		rmSync(parent, { recursive: true });
 		symlinkSync(root, parent, process.platform === "win32" ? "junction" : "dir");
 		assert.equal(blobs.getBytes(ref), null);

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { createServer, Server, Socket } from "node:net";
 import type { spawn, SpawnOptions } from "node:child_process";
 import {
@@ -193,9 +196,19 @@ test("Windows helper timeout forcibly closes the helper and returns even if pipe
 	const result = await run.child.windowsJob.finish();
 	assert.equal(result.confirmed, false);
 	assert.match(result.error!, /启动超时/);
+	assert.match(result.error!, /未建立控制连接/);
 	assert.equal(run.killed(), 1);
 	assert.equal(run.child.stdout.destroyed, true);
 	assert.equal(run.child.stderr.destroyed, true);
+});
+
+test("Windows startup diagnostics distinguish a connected control channel from missing READY", async () => {
+	const run = fixture({ startupMs: 10, exitMs: 10 });
+	await run.connect();
+	const result = await run.child.windowsJob.finish();
+	assert.equal(result.confirmed, false);
+	assert.match(result.error!, /控制连接已建立，但未收到命令就绪/);
+	assert.equal(run.killed(), 1);
 });
 
 test("Windows control status timeout has its own bounded drain timer after child exit", async () => {
@@ -239,6 +252,8 @@ test("Windows helper rejects loss of the original command exit code", async () =
 });
 
 test("Windows native helper contract prevents unowned startup, shell interpretation and inherited Job handles", () => {
+	assert.match(WINDOWS_JOB_SOURCE, /NamedPipeClientStream\("\.", pipeName, PipeDirection\.InOut, PipeOptions\.Asynchronous\)/);
+	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("$ProgressPreference='SilentlyContinue'") < WINDOWS_JOB_BOOTSTRAP.indexOf("ConvertFrom-Json"), "module-loading progress must never contaminate raw command stderr");
 	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("AssignProcessToJobObject($bootstrapJob") < WINDOWS_JOB_BOOTSTRAP.indexOf("Add-Type -TypeDefinition"));
 	assert.match(WINDOWS_JOB_BOOTSTRAP, /DefinePInvokeMethod/);
 	assert.match(WINDOWS_JOB_BOOTSTRAP, /WriteInt32\(\$limits, 16, 0x2000\)/);
@@ -254,4 +269,24 @@ test("Windows native helper contract prevents unowned startup, shell interpretat
 	assert.match(WINDOWS_JOB_SOURCE, /ClearJob\(job\);\s+cleaned = true;/);
 	assert.equal(WINDOWS_JOB_SOURCE.includes("BREAKAWAY_OK"), false);
 	assert.equal(/cmd\.exe|powershell\.exe|ProcessStartInfo/.test(WINDOWS_JOB_SOURCE), false);
+});
+
+for (const code of [0, 7]) test(`native Windows helper finishes without STOP and preserves only target bytes (exit ${code})`, { skip: process.platform !== "win32", timeout: 20_000 }, async t => {
+	const root = mkdtempSync(join(tmpdir(), "windows-job-native-"));
+	const expectedOut = Buffer.from([0, 0x81, 0x40, 13, 10, 0xe4, 0xb8, 0xad]);
+	const expectedError = Buffer.from("target stderr\r\n");
+	const script = `setTimeout(()=>{process.stdout.write(Buffer.from(${JSON.stringify([...expectedOut])}));process.stderr.write(Buffer.from(${JSON.stringify([...expectedError])}));process.exitCode=${code};},100);`;
+	const child = spawnWindowsJob(process.execPath, ["-e", script], { cwd: root, env: {} }, { startupMs: 10_000 });
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		rmSync(root, { recursive: true, force: true });
+	});
+	const stdout: Buffer[] = [], stderr: Buffer[] = [];
+	child.stdout.on("data", chunk => stdout.push(chunk));
+	child.stderr.on("data", chunk => stderr.push(chunk));
+	const cleanup = await child.windowsJob.finish();
+	assert.equal(cleanup.confirmed, true, `${JSON.stringify(cleanup)}; stderr=${Buffer.concat(stderr).toString()}`);
+	assert.equal(child.exitCode, code, "READY and DONE must not wait for a cancellation request");
+	assert.deepEqual(Buffer.concat(stdout), expectedOut, "helper initialization must not add stdout bytes");
+	assert.deepEqual(Buffer.concat(stderr), expectedError, "PowerShell progress must not enter command stderr");
 });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { hasPathAncestor } from "./path-identity.ts";
 
 export class ToolError extends Error {
 	constructor(message: string) {
@@ -26,6 +27,10 @@ export class Workspace {
 		return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
 	}
 
+	private insideExisting(real: string): boolean {
+		return this.inside(real) && (process.platform !== "win32" || hasPathAncestor(this.root, real));
+	}
+
 	/** 把模型给出的路径解析为绝对路径并校验边界。forWrite 时允许文件不存在（但父目录必须在工作区内）。 */
 	resolve(p: string, opts: { forWrite?: boolean } = {}): { abs: string; rel: string } {
 		if (typeof p !== "string" || !p.trim()) throw new ToolError("路径不能为空");
@@ -34,13 +39,14 @@ export class Workspace {
 		let real: string;
 		if (existsSync(candidate)) {
 			real = realpathSync(candidate);
+			if (!this.insideExisting(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
 		} else {
 			if (!opts.forWrite) throw new ToolError(`文件不存在：${this.rel(candidate)}`);
 			// 找到最近的已存在祖先，校验它的真实路径
 			let parent = dirname(candidate);
 			while (!existsSync(parent)) parent = dirname(parent);
 			const realParent = realpathSync(parent);
-			if (!this.inside(realParent)) throw new ToolError(`路径越出工作区：${p}`);
+			if (!this.insideExisting(realParent)) throw new ToolError(`路径越出工作区：${p}`);
 			real = join(realParent, relative(parent, candidate));
 		}
 		if (!this.inside(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);

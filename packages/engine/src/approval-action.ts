@@ -104,8 +104,9 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 	const observed = new Map<string, BigIntStats>();
 	const directoryHashes = new Map<string, string>();
 	function inside(path: string): boolean {
-		const rel = relative(root, path);
-		return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + sep));
+		// Share the tool boundary, including filesystem identity on Windows.
+		try { workspace.resolve(path, { forWrite: true }); return true; }
+		catch { return false; }
 	}
 	function checkPath(path: string): void {
 		if (!path || path.includes("\0") || Buffer.byteLength(path) > APPROVAL_ACTION_LIMITS.pathBytes) fail("invalid or oversized path");
@@ -193,7 +194,7 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 			const found = statOrMissing(current);
 			if (!found) {
 				if (!allowMissing) fail("required path does not exist");
-				const missing = join(current, ...parts.slice(n + 1));
+				const missing = workspace.resolve(join(current, ...parts.slice(n + 1)), { forWrite: true }).abs;
 				if (missing !== checked) fail("path changed during resolution");
 				add({ role, path: missing, kind: "missing", ...index });
 				return { path: missing, kind: "missing" };
@@ -229,7 +230,11 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 		}
 		const kind = stat.isFile() ? "file" : stat.isDirectory() ? "directory" : undefined;
 		if (!kind) fail("unsupported filesystem object");
+		current = realpathSync(current);
 		if (current !== checked) fail("path changed during resolution");
+		const canonicalStat = lstatSync(current, { bigint: true });
+		if (!same(stat, canonicalStat)) fail("path identity changed during resolution");
+		remember(current, canonicalStat);
 		add({ role, path: current, kind, ...identity(stat), ...(kind === "file" ? { sha256: fileHash(current, stat) } : {}), ...index });
 		return { path: current, kind };
 	}

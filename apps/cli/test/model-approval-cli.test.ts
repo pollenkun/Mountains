@@ -93,7 +93,9 @@ function cliFixture(t: TestContext) {
 			writeFileSync(path, JSON.stringify({ model: "deepseek-flash", apiKeyEnv: "MAIN_FIXTURE_KEY", maxTokens: 100,
 				checkpoints: false, retry: { maxAttempts: 1 }, limits: { maxCost: 1, maxRequests: 6, maxTurns: 4 }, ...overrides }));
 			// Deliberately exclude inherited provider credentials, proxies and NODE_OPTIONS.
-			const env: NodeJS.ProcessEnv = { ...isolatedEnv(home), MOUNTAINS_BUDGET_USD: "5", ...credentials };
+			// Test approval behavior without repopulating a cold compile cache in every fixture.
+			// startup-cache.test.ts exercises that optional optimization independently.
+			const env: NodeJS.ProcessEnv = { ...isolatedEnv(home), NODE_DISABLE_COMPILE_CACHE: "1", MOUNTAINS_BUDGET_USD: "5", ...credentials };
 			const running = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
 				const child = spawn(process.execPath, [MAIN, "run", "--task", TASK, "--workspace", workspace, "--config", path,
 					"--out", out, "--json", "--run-id", "approval-cli-fixture", "--base-url", baseUrl, "--spend-ledger", spend],

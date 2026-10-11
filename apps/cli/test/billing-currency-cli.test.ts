@@ -38,7 +38,9 @@ function runCli(t: TestContext, args: string[], workspace: string, envName: stri
 	// Pass only process essentials and fixture settings. Never inherit model Keys or proxy settings.
 	const home = join(dirname(workspace), "home");
 	mkdirSync(home, { recursive: true });
-	const env: NodeJS.ProcessEnv = { ...isolatedEnv(home),
+	// Each case has a fresh home. Cache population is covered by startup-cache tests,
+	// and its cold filesystem writes can dominate Windows CI startup time.
+	const env: NodeJS.ProcessEnv = { ...isolatedEnv(home), NODE_DISABLE_COMPILE_CACHE: "1",
 		...(globalBudget ? { MOUNTAINS_BUDGET: "7" } : {}), MOUNTAINS_BUDGET_USD: "7", [envName]: "offline-billing-fixture-not-a-real-key" };
 	assert.equal(env.HOME, home);
 	assert.equal(env.USERPROFILE, home);

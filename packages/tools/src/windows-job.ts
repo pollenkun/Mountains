@@ -190,7 +190,11 @@ public static class MountainsWindowsJob {
         StreamWriter writer = null;
         ManualResetEvent stop = new ManualResetEvent(false);
         try {
-            channel = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None);
+            // The STOP reader remains pending while this thread writes READY/DONE.
+            // A synchronous Windows pipe handle serializes those operations and
+            // can block status writes until STOP arrives. Overlapped I/O is required
+            // even though each StreamReader/StreamWriter call waits synchronously.
+            channel = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             channel.Connect(10000);
             writer = new StreamWriter(channel, new UTF8Encoding(false), 1024, true);
             writer.AutoFlush = true;
@@ -309,6 +313,7 @@ public static class MountainsWindowsJob {
 // through stdin: neither secrets nor long user arguments enter PowerShell syntax.
 export const WINDOWS_JOB_BOOTSTRAP = String.raw`
 $ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
 try {
     # Reflection.Emit runs inside PowerShell; it does not launch a C# compiler.
     # First put this wrapper in a Job, so even Add-Type's compiler descendants
@@ -510,6 +515,10 @@ export function spawnWindowsJob(program: string, argv: string[], options: { cwd:
 		closed = true;
 		expectExit(); finish();
 	});
-	startup = setTimeout(() => { if (!ready && !closed && !report) forceStop("Windows 进程管理器启动超时，已停止命令"); }, host.startupMs ?? 30000);
+	startup = setTimeout(() => {
+		if (!ready && !closed && !report) forceStop(socket
+			? "Windows 进程管理器启动超时：控制连接已建立，但未收到命令就绪状态；已停止命令"
+			: "Windows 进程管理器启动超时：未建立控制连接；已停止命令");
+	}, host.startupMs ?? 30000);
 	return child;
 }
