@@ -19,7 +19,14 @@ export class Workspace {
 	readonly root: string;
 
 	constructor(root: string) {
-		this.root = realpathSync(resolve(root));
+		this.root = this.realPath(resolve(root));
+	}
+
+	private realPath(path: string): string {
+		// JavaScript realpath may preserve case-insensitive aliases. Windows and
+		// macOS native resolution asks the filesystem for its actual entry names;
+		// do not case-fold, since either platform can use case-sensitive paths.
+		return process.platform === "win32" || process.platform === "darwin" ? realpathSync.native(path) : realpathSync(path);
 	}
 
 	private inside(abs: string): boolean {
@@ -38,14 +45,14 @@ export class Workspace {
 		if (!this.inside(candidate)) throw new ToolError(`路径越出工作区：${p}`);
 		let real: string;
 		if (existsSync(candidate)) {
-			real = realpathSync(candidate);
+			real = this.realPath(candidate);
 			if (!this.insideExisting(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
 		} else {
 			if (!opts.forWrite) throw new ToolError(`文件不存在：${this.rel(candidate)}`);
 			// 找到最近的已存在祖先，校验它的真实路径
 			let parent = dirname(candidate);
 			while (!existsSync(parent)) parent = dirname(parent);
-			const realParent = realpathSync(parent);
+			const realParent = this.realPath(parent);
 			if (!this.insideExisting(realParent)) throw new ToolError(`路径越出工作区：${p}`);
 			real = join(realParent, relative(parent, candidate));
 		}

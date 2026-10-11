@@ -77,7 +77,7 @@ Six tools: `query_plan` (search, list and read files in one call), `file_read`, 
 
 Requires Node.js 22.19 or later, npm, Git, and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`). Git stores file checkpoints.
 
-This update adds Linux and Windows compatibility. The offline tests pass on Linux. These changes have not yet been tested on real Windows or macOS machines. CI is set up for all three systems, each with Node.js 22.19 and 24.
+This update adds Linux and Windows compatibility. CI is set up for all three systems, each with Node.js 22.19 and 24. Linux and macOS pass. Windows still has test failures being fixed.
 
 - **Linux, macOS:** Bash is also required. Minimal Linux images may need it installed separately; process cleanup needs access to `/proc` on Linux.
 - **Windows 10/11:** install Git for Windows, including Git Bash, and keep the built-in Windows PowerShell available. Start from PowerShell, cmd, or Git Bash.
@@ -150,6 +150,14 @@ The last command calls DeepSeek, incurs model charges, and edits the example dir
 
 The command tool uses Bash syntax for `shellScript`. Direct `argv` calls need a native executable; run `npm.cmd` and `.bat` files through `cmd.exe /c` or Git Bash. Windows PowerShell manages child processes. If system policy blocks it, the command tool cannot run.
 
+### Commands and background processes
+
+`command_run` runs temporary commands. It attempts to clean up their processes when the command ends, times out, or is cancelled. Start long-running services in a separately managed terminal or service, rather than relying on a trailing `&` to keep them alive.
+
+Windows uses Job Objects. On Linux with an available user-systemd manager and support for `systemd-run --expand-environment=no`, the command enters its own scope before starting, and cleanup checks that the whole scope is empty. This adds no Python runtime requirement and does not configure system services for you.
+
+macOS and Linux without usable user-systemd have best-effort cleanup. Results explicitly mark cleanup as unconfirmed; descendants that detach too early can survive. Exit code 0 does not mean every background process has stopped. This is not a sandbox, and cleanup is not guaranteed after the host process is forcibly killed or the system crashes.
+
 ### Recordings and spending
 
 Recordings, replays, archives, and the spending ledger go in `.mountains` under your home directory (`%USERPROFILE%\.mountains` on Windows). Set `MOUNTAINS_HOME` to use another directory. A ledger path set in the config or through `--spend-ledger` takes precedence.
@@ -157,6 +165,8 @@ Recordings, replays, archives, and the spending ledger go in `.mountains` under 
 Previously, `MOUNTAINS_HOME` moved only archives. It now moves the default ledger too. If the old `~/.mountains/spend.jsonl` still exists and the new directory has no ledger, the CLI stops first. Move the old ledger over, or keep its original path with `--spend-ledger`, so cumulative spending does not restart at zero.
 
 The compile cache is separate: Linux uses `$XDG_CACHE_HOME` (default `~/.cache`), macOS uses `~/Library/Caches`, and Windows uses `%LOCALAPPDATA%`, followed by `mountains/node-compile-cache`. An unavailable cache does not prevent startup.
+
+Checkpoints also save Git-ignored files before file tools change them. Changes to ignored files made by commands may not be recoverable. Keep a separate backup of important files.
 
 ### Checks
 

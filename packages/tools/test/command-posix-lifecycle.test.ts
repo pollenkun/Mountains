@@ -86,7 +86,7 @@ test("real macOS sandbox synchronous ps rejection cannot suppress timeout signal
 	assert.ok(elapsed < 4200, `${elapsed}ms must include only the timeout and bounded cleanup`);
 	await until(() => f.pids().filter(pid => pid !== unrelated.pid).every(pid => !alive(identities([pid]).get(pid))), "the resistant command group must stop");
 	assert.ok(alive(identities([unrelated.pid!]).get(unrelated.pid!)), "an unrelated same-name process must survive");
-	assert.equal(result.details.processTreeCleanupConfirmed, undefined, "do not invent a whole-tree guarantee");
+	assert.equal(result.details.processTreeCleanupConfirmed, false, "do not invent a whole-tree guarantee");
 });
 
 test("parent exit with inherited pipes and unavailable identities returns explicit partial failure", { skip: process.platform !== "darwin", timeout: 8000 }, async t => {
@@ -103,7 +103,7 @@ test("parent exit with inherited pipes and unavailable identities returns explic
 for (const mode of ["normal", "nonzero"]) test(`ps rejection preserves ${mode} command output and real exit status`, { skip: process.platform !== "darwin", timeout: 8000 }, async t => {
 	const f = fixture(t); const { result } = await sandboxRun(t, f, mode, 5000);
 	assert.equal(result.ok, mode === "normal"); assert.equal(result.details.exitCode, mode === "normal" ? 0 : 7);
-	assert.equal(result.details.captureComplete, true); assert.ok(result.fullOutputRef); assert.equal(result.details.processTreeCleanupConfirmed, undefined);
+	assert.equal(result.details.captureComplete, true); assert.ok(result.fullOutputRef); assert.equal(result.details.processTreeCleanupConfirmed, false);
 	assert.match(result.modelContent, /complete stdout/); assert.match(result.modelContent, /complete stderr/);
 	assert.deepEqual(f.blobs.inspectCommand(result.fullOutputRef!, t.name, { maxArchiveBytes: 4096 })?.bytes.toString().split("\n").filter(Boolean).sort(), ["complete stderr", "complete stdout"]);
 });

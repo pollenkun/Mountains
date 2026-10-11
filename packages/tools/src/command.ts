@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import type { Risk, ToolDefinition, ToolResult } from "./types.ts";
 import { isValidUtf8, sha256, ToolError } from "./workspace.ts";
 import { findWindowsGitBash, nativeWindowsCommandHost, type WindowsCommandHost } from "./windows-command.ts";
+import { probeLinuxScope, spawnLinuxScope, type LinuxScopeHost, type LinuxScopeProcess } from "./linux-scope.ts";
 import type { WindowsJobCleanup as WindowsCleanupResult, WindowsJobProcess, spawnWindowsJob } from "./windows-job.ts";
 
 /** Trusted host/testing options. Existing callers need not provide them. */
@@ -12,6 +13,9 @@ export interface CommandExecutionHost {
 	spawn?: typeof spawn;
 	windows?: WindowsCommandHost;
 	spawnWindowsJob?: typeof spawnWindowsJob;
+	linuxScope?: LinuxScopeHost;
+	probeLinuxScope?: typeof probeLinuxScope;
+	spawnLinuxScope?: typeof spawnLinuxScope;
 }
 
 export interface CommandLimits {
@@ -242,7 +246,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 		logicalName: "command.run",
 		readOnly: false,
 		description:
-			"Run a command in the workspace (not sandboxed; subject to approval). Provide either argv (preferred) or shellScript (run with bash -c). " +
+			"Run a temporary command in the workspace (not sandboxed; subject to approval). Attempts to clean up background descendants when the command ends; platform ownership strength is reported; persistent user jobs require separate ownership. Provide either argv (preferred) or shellScript (run with bash -c). " +
 			(platform === "win32" ? "Windows argv requires a native executable; for .cmd/.bat such as npm.cmd, explicitly use cmd.exe /c or shellScript with Git for Windows Bash. " : "") +
 			`Returns exit code and combined stdout/stderr (long output keeps the first ${limits.headLines} and last ${limits.tailLines} lines). Default timeout ${limits.defaultTimeoutMs / 1000}s.`,
 		parameters: {
@@ -281,17 +285,22 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				if (script && !bash) return fail("复杂命令需要 Git for Windows 的 Bash。请安装 Git for Windows 后重试；不会改用 PowerShell。", { command: display, cwd: rel, risk });
 				const [prog, ...rest] = script ? [bash!, "-c", script] : (argv as string[]);
 				const launchJob = windowsHost ? execution.spawnWindowsJob ?? (await import("./windows-job.ts")).spawnWindowsJob : undefined;
+				const useLinuxScope = platform === "linux" && (!execution.spawn || !!execution.spawnLinuxScope)
+					&& await (execution.probeLinuxScope ?? probeLinuxScope)(execution.linuxScope);
 				if (ctx.signal.aborted) return fail("命令已取消，未启动进程", { command: display, cwd: rel, risk, cancelled: true });
 				ctx.assertExecutionAllowed?.();
 				const jobChild: WindowsJobProcess | undefined = launchJob?.(prog as string, rest, { cwd, env: environment });
-				const child = jobChild ?? (execution.spawn ?? spawn)(prog as string, rest, { cwd, detached: true, env: environment, stdio: ["ignore", "pipe", "pipe"] });
-				const jobResult = async (operation: "stop" | "finish"): Promise<WindowsCleanupResult> => {
-					try { return await jobChild!.windowsJob[operation](); }
-					catch { return { confirmed: false, error: "Windows 进程清理失败，未确认后台进程已全部结束" }; }
+				const scopeChild: LinuxScopeProcess | undefined = useLinuxScope
+					? (execution.spawnLinuxScope ?? spawnLinuxScope)(prog as string, rest, { cwd, env: environment }, execution.linuxScope) : undefined;
+				const managedChild = jobChild ?? scopeChild;
+				const child = managedChild ?? (execution.spawn ?? spawn)(prog as string, rest, { cwd, detached: true, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+				const managedResult = async (operation: "stop" | "finish"): Promise<WindowsCleanupResult> => {
+					try { return await (jobChild?.windowsJob ?? scopeChild!.linuxScope)[operation](); }
+					catch { return { confirmed: false, error: "进程清理失败，未确认后台进程已全部结束" }; }
 				};
-				const processes = jobChild ? { signal(_value: NodeJS.Signals) { return jobResult("stop"); }, close() { return jobResult("finish"); }, dispose() {} } : commandProcesses(child, environment);
-				let windowsCleanup: WindowsCleanupResult | undefined;
-				let forceWindowsExit: (() => void) | undefined;
+				const processes = managedChild ? { signal(_value: NodeJS.Signals) { return managedResult("stop"); }, close() { return managedResult("finish"); }, dispose() {} } : commandProcesses(child, environment);
+				let managedCleanup: WindowsCleanupResult | undefined;
+				let forceManagedExit: (() => void) | undefined;
 				let posixCleanupError: string | undefined;
 				let forcePosixExit: (() => void) | undefined;
 				let posixDeadline: NodeJS.Timeout | undefined;
@@ -301,23 +310,23 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				let outputLimited = false;
 				let timedOut = false;
 				let cancelled = false;
-				let windowsStopping = false;
+				let managedStopping = false;
 				let escalation: NodeJS.Timeout | undefined;
 				let timer: NodeJS.Timeout | undefined;
 				const stop = (grace: number) => {
 					clearTimeout(timer);
-					if (jobChild) {
-						if (windowsStopping) return;
-						windowsStopping = true;
-						// The wrapper owns a Job Object; stopping it clears descendants too.
+					if (managedChild) {
+						if (managedStopping) return;
+						managedStopping = true;
+						// Stop through the selected kernel owner, not a sampled process tree.
 						void processes.signal("SIGKILL").then(result => {
-							windowsCleanup = result as WindowsCleanupResult;
-							if (!windowsCleanup.confirmed && child.exitCode === null && child.signalCode === null) {
-								// Terminating the wrapper closes its non-inherited Job handle, but without confirmation
-								// this remains a reported cleanup failure, never a successful whole-tree claim.
+							managedCleanup = result as WindowsCleanupResult;
+							if (!managedCleanup.confirmed && child.exitCode === null && child.signalCode === null) {
+								// The direct child is still owned. Killing it cannot substitute for
+								// an independent whole-range cleanup confirmation.
 								try { child.kill("SIGKILL"); } catch { /* Failure remains visible below. */ }
 							}
-							forceWindowsExit?.();
+							forceManagedExit?.();
 						});
 						return;
 					}
@@ -362,20 +371,20 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 					};
 					child.on("error", (e) => settle({ code: null, signal: null, spawnError: String(e) }));
 					child.on("close", (code, signal) => settle({ code, signal }));
-					if (jobChild) {
-						forceWindowsExit = () => {
+					if (managedChild) {
+						forceManagedExit = () => {
 							if (settled || drainTimer) return;
 							// A surviving child can inherit stdout/stderr after its parent exits.
 							// Wait briefly for normal draining, then report incomplete cleanup instead of hanging the caller.
 							drainTimer = setTimeout(() => {
-								windowsCleanup = { confirmed: false,
-									error: windowsCleanup?.error ?? "父进程已结束但输出管道未关闭，未确认后台进程已全部结束" };
+								managedCleanup = { confirmed: false,
+									error: managedCleanup?.error ?? "父进程已结束但输出管道未关闭，未确认后台进程已全部结束" };
 								child.stdout.destroy(); child.stderr.destroy(); child.unref();
 								settle({ code: child.exitCode, signal: child.signalCode });
 							}, 500);
 						};
 						child.on("exit", () => {
-							void processes.close().then(result => { windowsCleanup = result as WindowsCleanupResult; forceWindowsExit?.(); });
+							void processes.close().then(result => { managedCleanup = result as WindowsCleanupResult; forceManagedExit?.(); });
 						});
 						if (ctx.signal.aborted) onAbort();
 					} else {
@@ -400,7 +409,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				clearTimeout(escalation);
 				ctx.signal.removeEventListener("abort", onAbort);
 				// Recheck captured descendants even when the original parent has already exited.
-				if (jobChild) windowsCleanup ??= await processes.close() as WindowsCleanupResult;
+				if (managedChild) managedCleanup ??= await processes.close() as WindowsCleanupResult;
 				else if (!posixCleanupError) {
 					let cleanupDeadline: NodeJS.Timeout | undefined;
 					const completed = await Promise.race([
@@ -410,9 +419,19 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 					clearTimeout(cleanupDeadline); processes.dispose();
 					if (!completed) posixCleanupError = "进程清理超时，未确认后台进程已全部结束";
 				}
-				// An unconfirmed Windows cleanup may have forcibly closed inherited pipes too.
+				// An unconfirmed native-owner cleanup may have forcibly closed inherited pipes too.
 				// Preserve captured bytes for audit, but never advertise them as a full output.
-				const cleanupIncomplete = !!posixCleanupError || windowsCleanup?.confirmed === false;
+				const cleanupIncomplete = !!posixCleanupError || managedCleanup?.confirmed === false;
+				const scopeStartupError = scopeChild?.linuxScope.startupError();
+				if (scopeStartupError) exit.spawnError = scopeStartupError;
+				const scopeOutcome = scopeChild?.linuxScope.outcome();
+				if (scopeOutcome) { exit.code = scopeOutcome.code; exit.signal = scopeOutcome.signal; }
+				else if (scopeChild) {
+					exit.code = null; // A bootstrap's generic exit is never the target's exit code.
+					if (!cancelled && !timedOut && !outputLimited) exit.signal = null;
+				}
+				const bestEffort = !managedChild;
+				const fallbackReason = platform === "linux" ? "usable user-systemd scope unavailable" : "no supported persistent process owner on this platform";
 				const raw = Buffer.concat(chunks, capturedBytes);
 				// Preserve bytes before deriving any display text. stdout/stderr are combined
 				// in observed data-event order, not claimed to be an OS-wide total order.
@@ -443,14 +462,16 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				const decoding = invalidUtf8 ? "; invalid UTF-8: display uses replacement characters" + (ref && recovery.contextExpand ? "; archived original bytes can be recovered as base64" : "") : "";
 				const searchHint = !outputLimited && !cleanupIncomplete && ref && recovery.contextExpand && recovery.archiveSearch && (truncated || invalidUtf8)
 					? `; search archived lines with context_search ref=${ref} toolCallId=${JSON.stringify(ctx.toolCallId)}` : "";
-				const cleanupHint = posixCleanupError ? `; ${posixCleanupError}` : windowsCleanup && !windowsCleanup.confirmed ? `; ${windowsCleanup.error ?? "未确认后台进程已全部结束"}` : "";
+				const cleanupHint = (bestEffort ? `; process cleanup best-effort/unconfirmed (${fallbackReason}); unobserved detached descendants may survive` : "") + (posixCleanupError ? `; ${posixCleanupError}` : managedCleanup && !managedCleanup.confirmed ? `; ${managedCleanup.error ?? "未确认后台进程已全部结束"}` : "");
 				const modelContent = `$ ${display}\n[${status}; ${durationMs}ms${truncated ? outputLimited || cleanupIncomplete ? `; display truncated, captured ${output.length} chars` : `; output truncated, full ${output.length} chars` : ""}${decoding}${recoveryHint}${searchHint}${cleanupHint}]\n${text}`;
 				return {
 					ok: !exit.spawnError && !timedOut && !cancelled && !outputLimited && !cleanupIncomplete && exit.code === 0,
 					modelContent,
 					summary: `运行 ${display.slice(0, 60)}（${status}${cleanupHint}）`,
 					details: { command: display, cwd: rel, risk, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, durationMs, outputChars: output.length, outputBytes: raw.length, outputSha256: sha256(raw), invalidUtf8, archiveError, streamOrder: "observed-data-events", toolCallId: ctx.toolCallId, truncated,
-						...(windowsCleanup ? { processTreeCleanupConfirmed: windowsCleanup.confirmed, processTreeCleanupError: windowsCleanup.error } : {}),
+						processTreeCleanupMode: scopeChild ? "systemd-scope" : jobChild ? "windows-job" : "best-effort",
+						...(bestEffort ? { processTreeCleanupConfirmed: false, processTreeCleanupReason: fallbackReason } : {}),
+						...(managedCleanup ? { processTreeCleanupConfirmed: managedCleanup.confirmed, processTreeCleanupError: managedCleanup.error } : {}),
 						...(posixCleanupError ? { processTreeCleanupConfirmed: false, processTreeCleanupError: posixCleanupError } : {}),
 						...(cleanupIncomplete ? { captureComplete: false, ...(ref ? { partialOutputRef: ref } : {}) } : {}),
 						...(captureMaxBytes !== undefined ? { captureMaxBytes, captureComplete: !outputLimited && !cleanupIncomplete, outputLimited, observedOutputBytes, ...(outputLimited && ref ? { partialOutputRef: ref } : {}) } : {}) },

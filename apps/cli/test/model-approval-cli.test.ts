@@ -97,6 +97,7 @@ function cliFixture(t: TestContext) {
 			// startup-cache.test.ts exercises that optional optimization independently.
 			const env: NodeJS.ProcessEnv = { ...isolatedEnv(home), NODE_DISABLE_COMPILE_CACHE: "1", MOUNTAINS_BUDGET_USD: "5", ...credentials };
 			const running = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+				const startedAt = Date.now();
 				const child = spawn(process.execPath, [MAIN, "run", "--task", TASK, "--workspace", workspace, "--config", path,
 					"--out", out, "--json", "--run-id", "approval-cli-fixture", "--base-url", baseUrl, "--spend-ledger", spend],
 				{ env, signal: t.signal, timeout: 10_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] });
@@ -104,7 +105,21 @@ function cliFixture(t: TestContext) {
 				child.stdout.on("data", (data) => { stdout += data; });
 				child.stderr.on("data", (data) => { stderr += data; });
 				child.on("error", (error) => { failure = error; });
-				child.on("close", (code) => failure ? reject(failure) : resolve({ code, stdout, stderr }));
+				child.on("close", (code, signal) => {
+					if (code === null) {
+						let events: unknown[] = [];
+						try {
+							events = readFileSync(join(out, "events.jsonl"), "utf8").trim().split("\n").slice(-12).map(line => {
+								const event = JSON.parse(line) as Record<string, unknown>;
+								// Record execution stages only, never credentials, model messages or arguments.
+								return { type: event.type, time: event.time, tool: event.tool, decision: event.decision, ok: event.ok, durationMs: event.durationMs };
+							});
+						} catch { /* Startup can fail before an event file exists. */ }
+						t.diagnostic(JSON.stringify({ elapsedMs: Date.now() - startedAt, signal,
+							markerWritten: existsSync(join(workspace, "marker.txt")), lastEvents: events }));
+					}
+					failure ? reject(failure) : resolve({ code, stdout, stderr });
+				});
 			});
 			pending = running;
 			return await running;

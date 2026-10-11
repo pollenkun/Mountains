@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { createServer, Server, Socket } from "node:net";
-import type { spawn, SpawnOptions } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import {
 	quoteWindowsJobArgument, resolveWindowsJobProgram, spawnWindowsJob,
 	WINDOWS_JOB_BOOTSTRAP, WINDOWS_JOB_SOURCE, type WindowsJobProcess, type WindowsJobHost,
@@ -254,6 +254,10 @@ test("Windows helper rejects loss of the original command exit code", async () =
 test("Windows native helper contract prevents unowned startup, shell interpretation and inherited Job handles", () => {
 	assert.match(WINDOWS_JOB_SOURCE, /NamedPipeClientStream\("\.", pipeName, PipeDirection\.InOut, PipeOptions\.Asynchronous\)/);
 	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("$ProgressPreference='SilentlyContinue'") < WINDOWS_JOB_BOOTSTRAP.indexOf("ConvertFrom-Json"), "module-loading progress must never contaminate raw command stderr");
+	assert.match(WINDOWS_JOB_BOOTSTRAP, /\$PSModuleAutoLoadingPreference='None'/);
+	assert.match(WINDOWS_JOB_BOOTSTRAP, /Import-Module -Name \(\[System\.IO\.Path\]::Combine\(\$PSHOME, 'Modules\\Microsoft\.PowerShell\.Utility\\Microsoft\.PowerShell\.Utility\.psd1'\)\) -ErrorAction Stop/);
+	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("AssignProcessToJobObject($bootstrapJob") < WINDOWS_JOB_BOOTSTRAP.indexOf("Import-Module -Name"), "module initialization remains inside the wrapper Job");
+	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("Import-Module -Name") < WINDOWS_JOB_BOOTSTRAP.indexOf("$p = $inputReader.ReadToEnd() | ConvertFrom-Json"), "JSON parsing must not invoke environment-dependent module discovery");
 	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("AssignProcessToJobObject($bootstrapJob") < WINDOWS_JOB_BOOTSTRAP.indexOf("Add-Type -TypeDefinition"));
 	assert.match(WINDOWS_JOB_BOOTSTRAP, /DefinePInvokeMethod/);
 	assert.match(WINDOWS_JOB_BOOTSTRAP, /WriteInt32\(\$limits, 16, 0x2000\)/);
@@ -276,7 +280,9 @@ for (const code of [0, 7]) test(`native Windows helper finishes without STOP and
 	const expectedOut = Buffer.from([0, 0x81, 0x40, 13, 10, 0xe4, 0xb8, 0xad]);
 	const expectedError = Buffer.from("target stderr\r\n");
 	const script = `setTimeout(()=>{process.stdout.write(Buffer.from(${JSON.stringify([...expectedOut])}));process.stderr.write(Buffer.from(${JSON.stringify([...expectedError])}));process.exitCode=${code};},100);`;
-	const child = spawnWindowsJob(process.execPath, ["-e", script], { cwd: root, env: {} }, { startupMs: 10_000 });
+	// Exercise both an absent module path and an explicit path with no modules.
+	const env = code === 0 ? {} : { PSModulePath: join(root, "missing-modules") };
+	const child = spawnWindowsJob(process.execPath, ["-e", script], { cwd: root, env }, { startupMs: 10_000 });
 	t.after(() => {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		rmSync(root, { recursive: true, force: true });
@@ -289,4 +295,39 @@ for (const code of [0, 7]) test(`native Windows helper finishes without STOP and
 	assert.equal(child.exitCode, code, "READY and DONE must not wait for a cancellation request");
 	assert.deepEqual(Buffer.concat(stdout), expectedOut, "helper initialization must not add stdout bytes");
 	assert.deepEqual(Buffer.concat(stderr), expectedError, "PowerShell progress must not enter command stderr");
+});
+
+test("native Windows minimal-environment bootstrap reports its initialization stages", { skip: process.platform !== "win32", timeout: 20_000 }, async t => {
+	const root = mkdtempSync(join(tmpdir(), "windows-job-bootstrap-"));
+	// Test-only diagnostics identify the blocked stage without exposing paths,
+	// environment values, command arguments, or the private control token.
+	const stage = (name: string) => `[Console]::Error.WriteLine('helper-stage:${name}')`;
+	const bootstrap = WINDOWS_JOB_BOOTSTRAP
+		.replace("$ErrorActionPreference='Stop'", `${stage("script-entered")}\n$ErrorActionPreference='Stop'`)
+		.replace("# Import only the trusted", `${stage("job-protected")}\n    # Import only the trusted`)
+		.replace("$inputReader =", `${stage("utility-imported")}\n    $inputReader =`)
+		.replace("$p = $inputReader.ReadToEnd() | ConvertFrom-Json", `$raw = $inputReader.ReadToEnd()\n        ${stage("input-read")}\n        $p = $raw | ConvertFrom-Json\n        ${stage("json-parsed")}`)
+		.replace("$code = [MountainsWindowsJob]::Run", `${stage("compiled")}\n    $code = [MountainsWindowsJob]::Run`)
+		.replace("exit $code", `${stage("run-returned")}\n    exit $code`);
+	const nativeSpawn: typeof spawn = ((program: string, args?: readonly string[], options?: SpawnOptions) => {
+		assert.ok(args);
+		const argv = [...args];
+		const encoded = argv.indexOf("-EncodedCommand") + 1;
+		assert.ok(encoded > 0);
+		argv[encoded] = Buffer.from(bootstrap, "utf16le").toString("base64");
+		return spawn(program, argv, options ?? {});
+	}) as unknown as typeof spawn;
+	const child = spawnWindowsJob(process.execPath, ["-e", "process.exitCode=0;"], { cwd: root, env: {} }, { startupMs: 10_000, spawn: nativeSpawn });
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		rmSync(root, { recursive: true, force: true });
+	});
+	const stderr: Buffer[] = [];
+	child.stdout.resume(); child.stderr.on("data", chunk => stderr.push(chunk));
+	const cleanup = await child.windowsJob.finish();
+	const stages = Buffer.concat(stderr).toString().split(/\r?\n/).filter(line => line.startsWith("helper-stage:"));
+	t.diagnostic(`Minimal Windows bootstrap stages: ${stages.join(", ") || "none"}`);
+	assert.equal(cleanup.confirmed, true, `${JSON.stringify(cleanup)}; stages=${JSON.stringify(stages)}`);
+	assert.equal(child.exitCode, 0);
+	assert.equal(stages.at(-1), "helper-stage:run-returned");
 });

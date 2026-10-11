@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -46,7 +46,24 @@ test("Windows absolute paths can differ in drive and directory letter case", { s
 	const alternate = join(root, "case.txt").toUpperCase();
 	const snapshot = snapshotApprovalAction(workspace, "file_write", { path: alternate, content: "next" });
 	assert.ok(snapshot.bindings.some(binding => binding.role === "target" && binding.kind === "file"));
+	const missing = snapshotApprovalAction(workspace, "file_write", { path: join(root.toUpperCase(), "NEW", "new.txt"), content: "next" });
+	assert.ok(missing.bindings.some(binding => binding.role === "target" && binding.kind === "missing"));
+	assert.equal(snapshot.fingerprint, snapshotApprovalAction(workspace, "file_write", { path: alternate, content: "next" }).fingerprint);
 	assert.throws(() => snapshotApprovalAction(workspace, "file_write", { path: root + "-sibling/file.txt", content: "next" }), /outside/);
+});
+
+test("case-insensitive relative aliases bind existing files and missing paths by identity", t => {
+	const { root, workspace } = fixture(t);
+	writeFileSync(join(root, "case.txt"), "original");
+	if (!existsSync(join(root, "CASE.TXT"))) { t.skip("fixture filesystem is case-sensitive"); return; }
+	mkdirSync(join(root, "directory"));
+	writeFileSync(join(root, "directory", "nested.txt"), "nested");
+	const nested = snapshotApprovalAction(workspace, "file_write", { path: "DIRECTORY/NESTED.TXT", content: "next" });
+	assert.ok(nested.bindings.some(binding => binding.role === "target" && binding.kind === "file"));
+	const existing = snapshotApprovalAction(workspace, "file_write", { path: "CASE.TXT", content: "next" });
+	assert.ok(existing.bindings.some(binding => binding.role === "target" && binding.kind === "file"));
+	const missing = snapshotApprovalAction(workspace, "file_write", { path: "DIRECTORY/new.txt", content: "new" });
+	assert.ok(missing.bindings.some(binding => binding.role === "target" && binding.kind === "missing"));
 });
 
 test("same bytes replacing the inode and parent directory identity are both detected", t => {

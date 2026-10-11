@@ -10,7 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { devNull } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const GIT_CFG = [
 	"-c", "core.autocrlf=false",
@@ -58,7 +58,7 @@ export class ShadowCheckpoints {
 	private readonly indexFile: string;
 
 	constructor(workspace: string, dataDir: string) {
-		this.workspace = realpathSync(resolve(workspace));
+		this.workspace = process.platform === "win32" || process.platform === "darwin" ? realpathSync.native(resolve(workspace)) : realpathSync(resolve(workspace));
 		const key = createHash("sha256").update(this.workspace).digest("hex").slice(0, 16);
 		this.gitDir = join(dataDir, "checkpoints", key);
 		this.indexFile = join(this.gitDir, "mountains-index");
@@ -80,6 +80,14 @@ export class ShadowCheckpoints {
 		return r.stdout;
 	}
 
+	private canonicalPath(path: string): string {
+		const p = gitPath(path), abs = join(this.workspace, p);
+		// Keep symlinks visible to snapshot's skip check. Existing regular files
+		// use native Windows/macOS spelling so aliases do not duplicate entries.
+		if (process.platform !== "win32" && process.platform !== "darwin" || !lstatSync(abs, { throwIfNoEntry: false })?.isFile()) return p;
+		return gitPath(relative(this.workspace, realpathSync.native(abs)));
+	}
+
 	/** 工作区文件清单：遵守 .gitignore，排除 .git，不跟随符号链接；外加强制纳入的路径 */
 	listFiles(forced: string[] = []): string[] {
 		const r = spawnSync(process.env.MOUNTAINS_RG ?? "rg", ["--files", "--null", "--path-separator", "/", "--hidden", "--sort", "path", "-g", "!.git", "--no-messages"], {
@@ -89,7 +97,7 @@ export class ShadowCheckpoints {
 		});
 		if (r.error || (r.status !== 0 && r.status !== 1)) throw new Error(`rg 文件枚举失败：${r.error?.message ?? r.stderr}`);
 		const set = new Set(r.stdout.split("\0").filter(Boolean).map(gitPath));
-		for (const f of forced) if (existsSync(join(this.workspace, f))) set.add(gitPath(f));
+		for (const f of forced) if (existsSync(join(this.workspace, f))) set.add(this.canonicalPath(f));
 		return [...set].sort();
 	}
 
@@ -115,6 +123,26 @@ export class ShadowCheckpoints {
 		else this.git(["read-tree", "--empty"]);
 		const tree = this.git(["write-tree"]).trim();
 		return { tree, files: files.length, skippedSymlinks, durationMs: Date.now() - t0 };
+	}
+
+	/**
+	 * Add an existing file omitted from the baseline (for example by .gitignore),
+	 * without re-snapshotting other paths or replacing their original contents.
+	 * Call once per canonical workspace-relative path, immediately before its
+	 * first authorized write. The caller must also remember absent preimages so
+	 * a later write to a newly created file cannot turn it into a baseline file.
+	 */
+	capturePreimage(tree: string, path: string): string {
+		const p = this.canonicalPath(path);
+		if (this.git(["--literal-pathspecs", "ls-tree", "-z", tree, "--", p])) return tree;
+		const st = lstatSync(join(this.workspace, p), { throwIfNoEntry: false });
+		if (!st) return tree;
+		if (!st.isFile()) throw new Error(`检查点只能保存普通文件：${p}`);
+		const hash = this.git(["hash-object", "-w", "--stdin-paths", "--no-filters"], `${quoteGitPath(p)}\n`).trim();
+		const mode = st.mode & 0o111 ? "100755" : "100644";
+		this.git(["read-tree", tree]);
+		this.git(["update-index", "-z", "--index-info"], `${mode} ${hash}\t${p}\0`);
+		return this.git(["write-tree"]).trim();
 	}
 
 	/** 快照中某路径的内容；不在快照中返回 null */

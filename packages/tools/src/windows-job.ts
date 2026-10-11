@@ -314,6 +314,7 @@ public static class MountainsWindowsJob {
 export const WINDOWS_JOB_BOOTSTRAP = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
+$PSModuleAutoLoadingPreference='None'
 try {
     # Reflection.Emit runs inside PowerShell; it does not launch a C# compiler.
     # First put this wrapper in a Job, so even Add-Type's compiler descendants
@@ -344,6 +345,10 @@ try {
     }
     # Do not CloseHandle this Job early: it includes this wrapper. Kernel process
     # exit closes the non-inherited handle without changing the requested exit code.
+    # Import only the trusted system module needed by ConvertFrom-Json/Add-Type.
+    # Autodiscovery otherwise depends on PSModulePath and user-profile/cache
+    # folders which may be absent in the target's deliberately restricted env.
+    Import-Module -Name ([System.IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
     # Decode only the private input pipe. Console.InputEncoding's setter calls
     # SetConsoleCP on .NET Framework and can fail without an attached console.
     $inputReader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false, $true), $true, 4096, $true)

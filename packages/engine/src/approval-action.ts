@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, type BigIntStats } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { classifyRisk, type Risk, type Workspace } from "@mountains/tools";
 
 /** Exceeding a bound is an error for the caller to route to human approval. */
@@ -41,6 +41,23 @@ function identity(stat: BigIntStats): Pick<ApprovalActionBinding, "dev" | "ino" 
 	return { dev: String(stat.dev), ino: String(stat.ino), mode: String(stat.mode), size: String(stat.size), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) };
 }
 function same(a: BigIntStats, b: BigIntStats): boolean { return JSON.stringify(identity(a)) === JSON.stringify(identity(b)); }
+
+// JavaScript realpath may preserve the caller's case. Never substitute case-folding:
+// case-sensitive NTFS siblings must remain distinct. Missing suffixes are exact;
+// existing ancestors must have the same observed filesystem identity.
+function sameResolvedPath(a: string, b: string): boolean {
+	if (a === b) return true;
+	if (process.platform !== "win32" && process.platform !== "darwin") return false;
+	for (let depth = 0; depth <= APPROVAL_ACTION_LIMITS.pathDepth; depth++) {
+		const left = statOrMissing(a), right = statOrMissing(b);
+		if (left || right) return !!left && !!right && left.ino !== 0n && same(left, right);
+		if (basename(a) !== basename(b)) return false;
+		const nextA = dirname(a), nextB = dirname(b);
+		if (nextA === a || nextB === b) return false;
+		a = nextA; b = nextB;
+	}
+	return false;
+}
 
 /** Caller owns an exact JSON clone. Do not invoke getters or serialize unbounded data. */
 function boundedArguments(args: Record<string, unknown>): string {
@@ -146,7 +163,7 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 				entries.push(item);
 			}
 			if (directoryReadBytes > APPROVAL_ACTION_LIMITS.totalDirectoryBytes) fail("directory byte limit exceeded");
-			if (workspace.resolve(path).abs !== path || !same(expected, lstatSync(path, { bigint: true }))) fail("directory changed while reading");
+			if (!sameResolvedPath(workspace.resolve(path).abs, path) || !same(expected, lstatSync(path, { bigint: true }))) fail("directory changed while reading");
 			entries.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
 			return hash(JSON.stringify(entries));
 		} finally { directory.closeSync(); }
@@ -160,7 +177,7 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 			const before = fstatSync(fd, { bigint: true });
 			if (!before.isFile() || !same(expected, before)) fail("file changed before reading");
 			const verified = workspace.resolve(path).abs;
-			if (verified !== path || !same(before, lstatSync(verified, { bigint: true }))) fail("file path changed before reading");
+			if (!sameResolvedPath(verified, path) || !same(before, lstatSync(verified, { bigint: true }))) fail("file path changed before reading");
 			const digest = createHash("sha256");
 			const buffer = Buffer.alloc(64 * 1024);
 			let size = 0;
@@ -195,7 +212,7 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 			if (!found) {
 				if (!allowMissing) fail("required path does not exist");
 				const missing = workspace.resolve(join(current, ...parts.slice(n + 1)), { forWrite: true }).abs;
-				if (missing !== checked) fail("path changed during resolution");
+				if (!sameResolvedPath(missing, checked)) fail("path changed during resolution");
 				add({ role, path: missing, kind: "missing", ...index });
 				return { path: missing, kind: "missing" };
 			}
@@ -216,12 +233,18 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 					parent = join(parent, part);
 					const parentStat = lstatSync(parent, { bigint: true });
 					if (!parentStat.isDirectory()) fail("resolved parent changed during snapshot");
+					parent = workspace.resolve(parent).abs;
+					if (!same(parentStat, lstatSync(parent, { bigint: true }))) fail("resolved parent identity changed");
 					remember(parent, parentStat);
 					add({ role: "parent", path: parent, kind: "directory", ...identity(parentStat), ...index });
 				}
 				current = real;
 				stat = lstatSync(current, { bigint: true });
 			}
+			// Normalize each component before hashing directories, retaining the
+			// separate lexical symlink binding above.
+			current = workspace.resolve(current).abs;
+			if (!same(stat, lstatSync(current, { bigint: true }))) fail("path identity changed during traversal");
 			remember(current, stat);
 			if (n < parts.length - 1) {
 				if (!stat.isDirectory()) fail("path parent is not a directory");
@@ -231,7 +254,8 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 		const kind = stat.isFile() ? "file" : stat.isDirectory() ? "directory" : undefined;
 		if (!kind) fail("unsupported filesystem object");
 		current = realpathSync(current);
-		if (current !== checked) fail("path changed during resolution");
+		if (!sameResolvedPath(current, checked)) fail("path changed during resolution");
+		current = checked;
 		const canonicalStat = lstatSync(current, { bigint: true });
 		if (!same(stat, canonicalStat)) fail("path identity changed during resolution");
 		remember(current, canonicalStat);

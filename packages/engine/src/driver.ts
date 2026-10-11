@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { ShadowCheckpoints, fileSha256, type SnapshotResult } from "@mountains/checkpoints";
+import { ShadowCheckpoints, fileSha256 } from "@mountains/checkpoints";
 import { CachePlanner, type ContextPlan, type ContextStateV1, ContextBuilder, ContextPublicationError, assertFitsWindow, assertToolPairing, checkpointArchiveRef, diffPlans, estimateTokens, type ContextPolicy, type RevisionResult, toolTarget } from "@mountains/context";
 import {
 	type EngineEvent,
@@ -552,15 +552,27 @@ export class AgentSession {
 		let finalText = "";
 		let turns = 0;
 		let ckpt: ShadowCheckpoints | null = null;
-		let snap0: SnapshotResult | null = null;
+		let baselineTree: string | null = null;
 		if (o.checkpoints !== false) {
 			try {
 				ckpt = new ShadowCheckpoints(o.workspace, o.appDataDir ?? join(o.dataDir, "appdata"));
-				snap0 = ckpt.snapshot();
+				baselineTree = ckpt.snapshot().tree;
 			} catch {
 				ckpt = null;
 			}
 		}
+		const beforeWrite = (abs: string) => {
+			const path = this.workspace.rel(abs);
+			// The hook runs after approval, before mutation. Remember even absent
+			// paths so repeated writes keep the first preimage (or its absence).
+			if (ckpt && baselineTree && !filesChanged.has(path)) {
+				// Approval may have awaited a human while a parent directory changed.
+				// Recheck the authorized target before reading bytes into the checkpoint.
+				if (this.workspace.resolve(path, { forWrite: true }).abs !== abs) throw new Error("文件路径在验证后已改变，检查点未保存");
+				baselineTree = ckpt.capturePreimage(baselineTree, path);
+			}
+			filesChanged.add(path);
+		};
 		if (this.runCount === 1) this.emit(runId, "session.started", { workspace: this.workspace.root, model: o.model });
 		this.emit(runId, "run.started", { task });
 		this.recorder.write("user.input", { runId, task });
@@ -584,10 +596,10 @@ export class AgentSession {
 				for (const input of this.interjections.splice(0)) this.recorder.write("user.input", { runId, id: input.id, task: input.text, source: "interjection", status: "undelivered" });
 			}
 			let checkpoint: RunSummary["checkpoint"] = null;
-			if (ckpt && snap0) {
+			if (ckpt && baselineTree) {
 				try {
 					const end = ckpt.snapshot([...filesChanged]);
-					checkpoint = { tree: snap0.tree, changed: ckpt.changedPaths(snap0.tree, end.tree) };
+					checkpoint = { tree: baselineTree, changed: ckpt.changedPaths(baselineTree, end.tree) };
 					this.recorder.write("file.hashes", {
 						runId,
 						changed: checkpoint.changed.map((c) => ({ ...c, after: fileSha256(join(this.workspace.root, c.path)) })),
@@ -829,7 +841,7 @@ export class AgentSession {
 			}
 
 			let pauseReason: string | null = null;
-			const results = await this.executeToolCalls(runId, turnId, msg.toolCalls, signal, filesChanged, async (call, args) => {
+			const results = await this.executeToolCalls(runId, turnId, msg.toolCalls, signal, beforeWrite, async (call, args) => {
 				if (runAuthorizationRevision !== this.authorizationRevision) pauseReason = "用户已发来新指令，旧运行停止";
 				if (pauseReason) return { decision: "ask", reason: pauseReason };
 				if (!o.modelApproval || !["command_run", "file_edit", "file_write", ...o.modelApproval.settings.manualTools].includes(call.name)) return null;
@@ -1188,7 +1200,7 @@ export class AgentSession {
 		turnId: string,
 		calls: ToolCall[],
 		signal: AbortSignal,
-		filesChanged: Set<string>,
+		beforeWrite: (abs: string) => void,
 		review?: (call: ToolCall, args: Record<string, unknown>) => Promise<ReviewedApprovalDecision | null>,
 		expectedActionEpoch?: number,
 	): Promise<{ call: ToolCall; result: ToolResult }[]> {
@@ -1245,7 +1257,7 @@ export class AgentSession {
 							if (manualFallback && (!humanApproved || !manualFallback())) throw new Error("人工审批未完成或操作目标与授权已变化，操作未执行");
 						} } : {}),
 						beforeWrite: async (abs) => {
-							filesChanged.add(this.workspace.rel(abs));
+							beforeWrite(abs);
 						},
 					};
 					try {

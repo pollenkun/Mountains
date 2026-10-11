@@ -77,7 +77,7 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 需要 Node.js 22.19 或更高版本、npm、Git，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。Git 用来保存文件检查点。
 
-这次补了 Linux 和 Windows 的兼容。Linux 的离线测试已通过，Windows 和 macOS 的这版修改还没在真机上测。CI 配了三个系统，每个系统都检查 Node.js 22.19 和 24。
+这次补了 Linux 和 Windows 的兼容。CI 配了三个系统，每个系统都检查 Node.js 22.19 和 24。Linux 和 macOS 已通过，Windows 还有测试问题，仍在修。
 
 - **Linux、macOS：** 还需要 Bash。精简 Linux 镜像可能没有自带，需要另装；Linux 的进程清理要能读取 `/proc`。
 - **Windows 10/11：** 安装 Git for Windows，包含 Git Bash，并保留系统自带的 Windows PowerShell。可以从 PowerShell、cmd 或 Git Bash 启动。
@@ -150,6 +150,14 @@ npm.cmd run mountains -- run --task "修复 add.cjs 中的 add，让它返回两
 
 命令工具的 `shellScript` 用 Bash 语法。`argv` 直接调用原生程序；`npm.cmd`、`.bat` 要通过 `cmd.exe /c` 或 Git Bash 调用。Windows PowerShell 用来管理子进程，系统策略禁用它时，命令工具不能运行。
 
+### 命令和后台进程
+
+`command_run` 用来运行临时命令。命令结束、超时或取消时，会尝试清理它启动的进程。需要长期保留的服务，请在单独管理的终端或服务里启动，不要靠命令末尾的 `&` 留在后台。
+
+Windows 用 Job Object 管理进程。Linux 在已有的用户级 systemd 支持 `systemd-run --expand-environment=no` 时，先把命令放进独立的 scope，结束后检查整个 scope 是否为空。这里不新增 Python 运行时要求，也不会替你配置系统服务。
+
+macOS 和没有可用用户级 systemd 的 Linux 只能尽力清理。结果会明确标出清理未确认；过早脱离的后代仍可能遗留。退出码为 0，不代表所有后台进程都已退出。它也不是沙箱，不保证主进程被强杀或系统崩溃后能自动清理。
+
 ### 记录和费用
 
 运行记录、回放、归档和费用账本默认放在主目录的 `.mountains` 下，Windows 是 `%USERPROFILE%\.mountains`。设置 `MOUNTAINS_HOME` 可以换目录。配置文件或 `--spend-ledger` 指定的账本路径优先。
@@ -157,6 +165,8 @@ npm.cmd run mountains -- run --task "修复 add.cjs 中的 add，让它返回两
 以前的 `MOUNTAINS_HOME` 只改归档位置。这次也会改默认账本位置。如果旧的 `~/.mountains/spend.jsonl` 还在、新目录没有账本，CLI 会先停下来。把旧账本搬过去，或用 `--spend-ledger` 继续用原路径，累计费用就不会从零开始。
 
 编译缓存另外存放：Linux 用 `$XDG_CACHE_HOME`（默认 `~/.cache`），macOS 用 `~/Library/Caches`，Windows 用 `%LOCALAPPDATA%`，再加 `mountains/node-compile-cache`。缓存不可用不影响启动。
+
+检查点也会保存文件工具修改前的 Git 忽略文件。通过命令修改的忽略文件，不保证能恢复到修改前；重要文件还是要另外备份。
 
 ### 检查
 
