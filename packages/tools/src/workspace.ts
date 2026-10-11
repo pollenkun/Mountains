@@ -85,6 +85,22 @@ export class FileStateTracker {
 		return covered >= end;
 	}
 
+	/** Only ranges not yet published from this exact file version; no old-version inference. */
+	undeliveredRanges(rel: string, hash: string, start: number, end: number): { start: number; end: number }[] {
+		const known = [...(this.delivered.get(`${rel}\0${hash}`) ?? [])].sort((a, b) => a[0] - b[0]);
+		const missing: { start: number; end: number }[] = [];
+		let next = start;
+		for (const [seenStart, seenEnd] of known) {
+			if (seenEnd < next) continue;
+			if (seenStart > end) break;
+			if (seenStart > next) missing.push({ start: next, end: Math.min(end, seenStart - 1) });
+			next = Math.max(next, seenEnd + 1);
+			if (next > end) break;
+		}
+		if (next <= end) missing.push({ start: next, end });
+		return missing;
+	}
+
 	/** 上下文被修订（遮蔽）后，已发送的内容不再可见：清空记录 */
 	forgetDelivered(): void {
 		this.delivered.clear();

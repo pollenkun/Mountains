@@ -1,7 +1,7 @@
 import type { Usage } from "@mountains/protocol";
 import type { ProviderId } from "./capabilities.ts";
 
-/** 三家原始 usage 字段的并集（只列出用到的字段） */
+/** 支持的原始 usage 字段的并集（只列出用到的字段） */
 export interface RawUsage {
 	prompt_tokens?: number;
 	completion_tokens?: number;
@@ -14,6 +14,8 @@ export interface RawUsage {
 	/** Moonshot 旧字段（顶层） */
 	cached_tokens?: number;
 	completion_tokens_details?: { reasoning_tokens?: number } | null;
+	/** OpenRouter 官方响应中本次请求的实际 USD 费用；必须由官方适配器另行验证。 */
+	cost?: number;
 }
 
 /** @deprecated 使用 RawUsage */
@@ -44,11 +46,20 @@ export function normalizeUsage(provider: ProviderId, raw: RawUsage | null | unde
 		// 智谱在无命中时可能省略 prompt_tokens_details；有 prompt_tokens 时按 0 命中处理
 		if (hit === undefined && prompt !== undefined && raw.prompt_tokens_details == null) hit = 0;
 		miss = prompt !== undefined && hit !== undefined ? prompt - hit : undefined;
-	} else {
+	} else if (provider === "moonshot") {
 		hit = num(raw.prompt_tokens_details?.cached_tokens) ?? num(raw.cached_tokens);
 		if (hit === undefined && prompt !== undefined && raw.prompt_tokens_details == null) hit = 0;
 		write = num(raw.prompt_tokens_details?.cache_write_tokens) ?? 0;
 		miss = prompt !== undefined && hit !== undefined ? prompt - hit - write : undefined;
+	} else if (provider === "siliconflow") {
+		// 硅基官方兼容接口提供命中/未命中字段，未给出时才读取标准字段。
+		hit = num(raw.prompt_cache_hit_tokens) ?? num(raw.prompt_tokens_details?.cached_tokens);
+		miss = num(raw.prompt_cache_miss_tokens) ?? (prompt !== undefined && hit !== undefined ? prompt - hit : undefined);
+	} else {
+		// OpenAI 标准：缓存属于 prompt_tokens，不能复用 Moonshot 的缓存写入口径。
+		// 没有 cached_tokens 时仍然未知，不能把一次未知的账单当成零缓存。
+		hit = num(raw.prompt_tokens_details?.cached_tokens);
+		miss = prompt !== undefined && hit !== undefined ? prompt - hit : undefined;
 	}
 	const total = num(raw.total_tokens) ?? (prompt !== undefined && out !== undefined ? prompt + out : undefined);
 	const u: Usage = {

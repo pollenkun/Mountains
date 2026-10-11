@@ -1,5 +1,5 @@
 /**
- * Mountains 引擎协议：引擎与界面（TUI、CLI、以后的桌面端）之间唯一的通信格式。
+ * Mountains 引擎协议：引擎与界面（CLI，以后的桌面端）之间唯一的通信格式。
  * - 分层：session → run（一次用户任务）→ turn（一次模型请求）→ message / tool
  * - 每个事件带 protocolVersion、sessionId、runId、seq、eventId
  * - toolCallId 贯穿审批、执行、结果与 usage
@@ -61,6 +61,26 @@ export const UsageSchema = Type.Object({
 });
 export type Usage = Static<typeof UsageSchema>;
 
+/** 适配器从精确官方接口附加的账单证据；不是模型文本或调用方任意报价。 */
+export interface ModelBillingReceipt {
+	kind: "openrouter-usage-cost" | "siliconflow-free";
+	endpoint: string;
+	model: string;
+	currency: "CNY" | "USD";
+	amount: number;
+	/** prompt_tokens 总输入，已经包含缓存命中的部分。 */
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+}
+export const ModelBillingReceiptSchema = Type.Object({
+	kind: Type.Union([Type.Literal("openrouter-usage-cost"), Type.Literal("siliconflow-free")]),
+	endpoint: Type.String(), model: Type.String(),
+	currency: Type.Union([Type.Literal("CNY"), Type.Literal("USD")]),
+	amount: Type.Number({ minimum: 0 }),
+	inputTokens: Type.Integer({ minimum: 0 }), outputTokens: Type.Integer({ minimum: 0 }), totalTokens: Type.Integer({ minimum: 0 }),
+});
+
 // ───────────── 事件 ─────────────
 
 const Base = {
@@ -97,6 +117,8 @@ export const EngineEventSchema = Type.Union([
 		segments: Type.Array(SegmentSchema),
 		prefixHash: Type.String(),
 		firstChangedSegment: Type.Union([Type.String(), Type.Null()]),
+		/** Opt-in runtime inputs actually included in this request. */
+		interjectionIds: Type.Optional(Type.Array(Type.String())),
 	}),
 	event("message.delta", { turnId: Type.String(), kind: Type.Union([Type.Literal("text"), Type.Literal("thinking")]), text: Type.String() }),
 	event("message.completed", {
@@ -118,6 +140,7 @@ export const EngineEventSchema = Type.Union([
 		cwd: Type.String(),
 		risk: Type.Union([Type.Literal("read-only"), Type.Literal("workspace-write"), Type.Literal("network"), Type.Literal("dangerous")]),
 		explanation: Type.String(),
+		source: Type.Optional(Type.Union([Type.Literal("model"), Type.Literal("human")])),
 	}),
 	event("approval.resolved", {
 		toolCallId: Type.String(),
@@ -142,10 +165,14 @@ export const EngineEventSchema = Type.Union([
 		model: Type.String(),
 		usage: UsageSchema,
 		rawUsage: Type.Unknown(),
+		billingReceipt: Type.Optional(ModelBillingReceiptSchema),
+		/** 官方账单字段明确矛盾，不能退回目录估算当成已知费用。 */
+		billingReceiptRejected: Type.Optional(Type.Literal(true)),
 		/** 估算费用（原币种，见 currency） */
 		cost: Type.Union([Type.Number(), Type.Null()]),
 		currency: Type.String(),
-		costEstimated: Type.Literal(true),
+		/** 官方费用凭证为 false；目录价计算保持 true。 */
+		costEstimated: Type.Boolean(),
 		priceVersion: Type.String(),
 		pricePeriod: Type.String(),
 		durationMs: Type.Number(),

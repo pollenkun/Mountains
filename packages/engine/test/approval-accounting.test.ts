@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Usage } from "@mountains/protocol";
 import type { ModelAdapter, ModelRequest, ModelResponse, RawUsage } from "@mountains/providers";
-import type { ToolDefinition } from "@mountains/tools";
+import { createExpandTool, type ToolDefinition } from "@mountains/tools";
 import { AgentSession, type EngineOptions } from "../src/driver.ts";
 import { BudgetGuard } from "../src/policy.ts";
 import { ScriptedModelAdapter, type RecordedResponse } from "../src/replay.ts";
@@ -38,6 +38,7 @@ function fixture(t: TestContext, main: ModelAdapter, options: { model?: string; 
 		name, logicalName: name, description: "Offline stub; performs no command or external action.", parameters: { type: "object" }, readOnly: name === "test_read",
 		async execute() { executed.push(name); return { ok: true, modelContent: "stub", summary: "stub", details: {} }; },
 	}));
+	tools.push(createExpandTool());
 	const settings = validateApprovalSettings({ model: "offline-judge", baseUrl: "http://127.0.0.1:1", apiKeyEnv: "UNUSED", profile: "moonshot",
 		thinking: { enabled: true, effort: "default" }, maxTokens: 64, maxInputChars: 20_000, timeoutMs: 100, maxRequests: 8, maxDenials: 3, maxCost: maxCost / 2,
 		pricing: { currency, inputPerMillion: 1, outputPerMillion: 1, version: "offline" },
@@ -69,14 +70,14 @@ for (const [label, rawUsage] of [
 }
 
 test("Moonshot cache writes count toward main input limits before the next request", async (t) => {
-	const usage = { prompt_tokens: 4000, completion_tokens: 10, total_tokens: 4010, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 4000 } };
+	const usage = { prompt_tokens: 6000, completion_tokens: 10, total_tokens: 6010, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 6000 } };
 	const main = new ScriptedModelAdapter([reply(usage, "test_read", "kimi-k2.7-code"), reply(usage, "test_read", "kimi-k2.7-code"), reply(usage, undefined, "kimi-k2.7-code")]);
-	const f = fixture(t, main, { model: "kimi-k2.7-code", maxInputTokens: 9000 });
+	const f = fixture(t, main, { model: "kimi-k2.7-code", maxInputTokens: 14_000 });
 	const result = await f.agent.run("Read the local stub.");
 	assert.equal(result.status, "limit"); assert.match(result.reason, /token 上限/);
 	assert.ok(main.requests.length > 0 && main.requests.length < 3);
-	assert.equal(result.totals.input, main.requests.length * 4000);
-	assert.ok(result.totals.input <= 9000); assert.equal(result.totals.usagePartialRequests, 0);
+	assert.equal(result.totals.input, main.requests.length * 6000);
+	assert.ok(result.totals.input <= 14_000); assert.equal(result.totals.usagePartialRequests, 0);
 });
 
 test("approval cache writes join the same input total as main requests", async (t) => {

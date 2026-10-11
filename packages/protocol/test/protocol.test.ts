@@ -30,7 +30,14 @@ describe("协议 schema", () => {
 			firstTokenMs: null,
 		};
 		assert.ok(isValidEvent(ev));
-		assert.ok(!isValidEvent({ ...ev, costEstimated: false }), "费用必须标明是估算");
+		const receipt = { kind: "openrouter-usage-cost", endpoint: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1-mini", currency: "USD", amount: 0.1, inputTokens: 3, outputTokens: 3, totalTokens: 6 };
+		assert.ok(isValidEvent({ ...ev, model: receipt.model, costEstimated: false, billingReceipt: receipt }), "官方费用证据能与未知缓存统计分开传输");
+		assert.ok(!isValidEvent({ ...ev, costEstimated: "false" }));
+		assert.ok(!isValidEvent({ ...ev, billingReceipt: { ...receipt, amount: -1 } }));
+		assert.ok(!isValidEvent({ ...ev, billingReceipt: { ...receipt, inputTokens: 0.5 } }));
+		assert.ok(!isValidEvent({ ...ev, billingReceipt: { ...receipt, kind: "untrusted-quote" } }));
+		assert.ok(isValidEvent({ ...ev, cost: null, billingReceiptRejected: true }));
+		assert.ok(!isValidEvent({ ...ev, billingReceiptRejected: false }));
 	});
 	test("高优先级事件集合包含审批与完成", () => {
 		for (const t of ["approval.requested", "run.completed", "error"] as const) assert.ok(HIGH_PRIORITY_EVENTS.has(t));

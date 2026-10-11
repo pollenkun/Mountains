@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { classifyRisk, type Risk, type Workspace } from "@mountains/tools";
 
 /** Exceeding a bound is an error for the caller to route to human approval. */
-export const APPROVAL_ACTION_LIMITS = Object.freeze({ argv: 128, argumentBytes: 256 * 1024, argumentNodes: 4096, argumentDepth: 24, pathBytes: 4096, pathDepth: 64, bindings: 1024, fileBytes: 1024 * 1024, totalFileBytes: 4 * 1024 * 1024 });
+export const APPROVAL_ACTION_LIMITS = Object.freeze({ argv: 128, argumentBytes: 256 * 1024, argumentNodes: 4096, argumentDepth: 24, pathBytes: 4096, pathDepth: 64, bindings: 1024, fileBytes: 1024 * 1024, totalFileBytes: 4 * 1024 * 1024, directoryEntries: 1024, totalDirectoryEntries: 4096, totalDirectoryBytes: 256 * 1024 });
 
 export interface ApprovalActionBinding {
 	role: "cwd" | "target" | "argv-path" | "parent" | "symlink";
@@ -18,6 +18,7 @@ export interface ApprovalActionBinding {
 	mtimeNs?: string;
 	ctimeNs?: string;
 	sha256?: string;
+	entriesSha256?: string;
 	linkTarget?: string;
 }
 
@@ -96,21 +97,55 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 	const root = workspace.root;
 	if (realpathSync(root) !== root) fail("workspace root identity changed");
 	const bindings: ApprovalActionBinding[] = [];
-	const limitations = ["Filesystem observations are not an OS sandbox or a complete TOCTOU defense. Revalidate immediately before execution; later changes remain possible.", "File bytes are hashed only. File contents are not user authorization."];
+	const limitations = ["Filesystem observations are not an OS sandbox or a complete TOCTOU defense. Revalidate immediately before execution; later changes remain possible.", "File bytes are hashed only. File contents are not user authorization.", "Directory digests cover direct entry names and types only; child file contents and nested descendants are not enumerated."];
 	let readBytes = 0;
+	let directoryReadEntries = 0;
+	let directoryReadBytes = 0;
 	const observed = new Map<string, BigIntStats>();
+	const directoryHashes = new Map<string, string>();
 	function inside(path: string): boolean { return path === root || path.startsWith(root + sep); }
 	function checkPath(path: string): void {
 		if (!path || path.includes("\0") || Buffer.byteLength(path) > APPROVAL_ACTION_LIMITS.pathBytes) fail("invalid or oversized path");
 	}
 	function add(binding: ApprovalActionBinding): void {
 		if (bindings.length >= APPROVAL_ACTION_LIMITS.bindings) fail("too many filesystem bindings");
+		if (binding.kind === "directory") {
+			let digest = directoryHashes.get(binding.path);
+			if (digest === undefined) {
+				digest = directoryHash(binding.path, observed.get(binding.path)!);
+				directoryHashes.set(binding.path, digest);
+			}
+			binding = { ...binding, entriesSha256: digest };
+		}
 		bindings.push(binding);
 	}
 	function remember(path: string, stat: BigIntStats): void {
 		const prior = observed.get(path);
 		if (prior && !same(prior, stat)) fail("filesystem changed during snapshot");
 		observed.set(path, stat);
+	}
+	function directoryHash(path: string, expected: BigIntStats): string {
+		if (!expected?.isDirectory() || !same(expected, lstatSync(path, { bigint: true }))) fail("directory changed before reading");
+		// Read incrementally; readdirSync would allocate every entry before enforcing
+		// a bound. Hex encoding preserves arbitrary filename bytes without collisions.
+		const directory = opendirSync(path, { encoding: "hex", bufferSize: 32 });
+		try {
+			const entries: [string, string][] = [];
+			directoryReadBytes += 2;
+			for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+				if (entries.length >= APPROVAL_ACTION_LIMITS.directoryEntries || ++directoryReadEntries > APPROVAL_ACTION_LIMITS.totalDirectoryEntries) fail("directory entry limit exceeded");
+				const kind = entry.isFile() ? "file" : entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "symlink"
+					: entry.isBlockDevice() ? "block" : entry.isCharacterDevice() ? "character" : entry.isFIFO() ? "fifo" : entry.isSocket() ? "socket" : "unknown";
+				const item: [string, string] = [entry.name, kind];
+				directoryReadBytes += Buffer.byteLength(JSON.stringify(item)) + 1;
+				if (directoryReadBytes > APPROVAL_ACTION_LIMITS.totalDirectoryBytes) fail("directory byte limit exceeded");
+				entries.push(item);
+			}
+			if (directoryReadBytes > APPROVAL_ACTION_LIMITS.totalDirectoryBytes) fail("directory byte limit exceeded");
+			if (workspace.resolve(path).abs !== path || !same(expected, lstatSync(path, { bigint: true }))) fail("directory changed while reading");
+			entries.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+			return hash(JSON.stringify(entries));
+		} finally { directory.closeSync(); }
 	}
 	function fileHash(path: string, expected: BigIntStats): string {
 		if (expected.size > BigInt(APPROVAL_ACTION_LIMITS.fileBytes) || readBytes + Number(expected.size) > APPROVAL_ACTION_LIMITS.totalFileBytes) fail("file read limit exceeded");
@@ -235,6 +270,8 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 	for (const [path, stat] of observed) {
 		const after = statOrMissing(path);
 		if (!after || !same(stat, after)) fail("filesystem changed during snapshot");
+		const digest = directoryHashes.get(path);
+		if (digest !== undefined && directoryHash(path, stat) !== digest) fail("directory entries changed during snapshot");
 	}
 	const data = { version: 1, tool, cwd, risk, argsSha256, bindings, limitations };
 	return { cwd, risk, argsSha256, bindings, limitations, fingerprint: hash(JSON.stringify(data)) };

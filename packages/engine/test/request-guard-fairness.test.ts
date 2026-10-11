@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { EngineEvent } from "@mountains/protocol";
 import type { ModelRequest, ModelResponse } from "@mountains/providers";
-import { defaultTools } from "@mountains/tools";
+import { generalTools } from "@mountains/tools";
 import { AgentSession, type RunLimits } from "../src/driver.ts";
 import { validateApprovalSettings } from "../src/approval-settings.ts";
 import { BudgetGuard } from "../src/policy.ts";
@@ -45,7 +45,7 @@ function fixture(t: TestContext) {
 		const main = new FixedTimeScript([reply(true), reply(false)]); const judge = new ScriptedModelAdapter([]);
 		const events: EngineEvent[] = [];
 		const agent = new AgentSession({
-			workspace, dataDir, adapter: main, tools: defaultTools(), model: "deepseek-flash", thinking: { enabled: true, effort: "high" }, maxTokens: 64,
+			workspace, dataDir, adapter: main, tools: generalTools(), model: "deepseek-flash", thinking: { enabled: true, effort: "high" }, maxTokens: 64,
 			budget, checkpoints: false, retry: { maxAttempts: 1, baseDelayMs: 0 }, sessionId: "same-read-only-session", runId: "same-read-only-run",
 			limits: { maxTurns: 8, maxRequests: 8, maxCost: 1, maxInputTokens: 100_000, maxOutputTokens: 100_000, ...options.limits },
 			...(options.requestGuard === undefined ? {} : { requestGuard: options.requestGuard }),
@@ -95,8 +95,8 @@ test("a tight money budget stops both guarded arms after the same real read", as
 	assert.equal(off.mainRequests, 1); assert.equal(off.readCalls, 1); assert.equal(off.reservations.length, 1);
 });
 
-test("the reported 12000-input limit has the same stopping point with approval off or on under a shared guard", async (t) => {
-	const run = fixture(t); const options = { requestGuard: true, limits: { maxInputTokens: 12_000 } };
+test("an input limit between the first and second request has the same stopping point with approval off or on under a shared guard", async (t) => {
+	const run = fixture(t); const options = { requestGuard: true, limits: { maxInputTokens: 22_000 } };
 	const off = await run(false, options); const on = await run(true, options);
 	sameReadOnlyOutcome(off, on);
 	assert.equal(off.summary.status, "limit"); assert.match(off.summary.reason, /token 上限/);
@@ -112,7 +112,7 @@ test("a tight output limit has the same stopping point with approval off or on u
 });
 
 test("legacy defaults stay unchanged, while approval always implies request protection", async (t) => {
-	const run = fixture(t); const limits = { maxInputTokens: 12_000 };
+	const run = fixture(t); const limits = { maxInputTokens: 22_000 };
 	const omitted = await run(false, { limits }); const disabled = await run(false, { requestGuard: false, limits });
 	sameReadOnlyOutcome(omitted, disabled); assert.equal(omitted.summary.status, "completed"); assert.equal(omitted.mainRequests, 2);
 	assert.deepEqual(omitted.reservations, []);

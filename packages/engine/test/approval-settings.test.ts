@@ -39,7 +39,10 @@ test("任意模型显式选协议和费率；不能按名字前缀猜测未知�
 	assert.throws(() => validateApprovalSettings(noProfile, "USD"), /profile/);
 	assert.throws(() => validateApprovalSettings(noPricing, "USD"), /pricing/);
 	assert.throws(() => validateApprovalSettings({ model: "deepseek-not-registered", maxCost: 1 }, "USD"), /profile/);
-	assert.throws(() => validateApprovalSettings({ model: "deepseek-v4-pro", maxCost: 1 }, "USD"), /profile/);
+	const pro = validateApprovalSettings({ model: "deepseek-v4-pro", maxCost: 1 }, "USD");
+	assert.equal(pro.profile, "deepseek");
+	assert.equal(pro.baseUrl, "https://api.deepseek.com");
+	assert.equal(pro.pricing.inputPerMillion, 1.32);
 	assert.equal(validateApprovalSettings({ model: "deepseek-v4-pro", profile: "deepseek", baseUrl: "https://api.deepseek.com", maxCost: 1 }, "USD").pricing.inputPerMillion, 1.32);
 });
 

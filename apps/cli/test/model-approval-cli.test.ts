@@ -205,7 +205,10 @@ test("modelApproval configuration: unknown models need an explicit protocol, end
 		delete candidate[field];
 		assert.throws(() => config({ modelApproval: candidate }), /profile|baseUrl|pricing|模型|供应商|协议|价格/, `missing ${field}`);
 	}
-	assert.throws(() => config({ modelApproval: { model: "deepseek-v4-pro", maxCost: 0.2 } }), /profile|模型|协议/);
+	assert.throws(() => config({ modelApproval: { model: "deepseek-not-registered", maxCost: 0.2 } }), /profile|模型|协议/);
+	const registeredPro = config({ modelApproval: { model: "deepseek-v4-pro", maxCost: 0.2 } }).config.modelApproval;
+	assert.equal(registeredPro?.profile, "deepseek");
+	assert.equal(registeredPro?.pricing.inputPerMillion, 1.32);
 	const approval = config({ modelApproval: customApproval() }).config.modelApproval;
 	assert.equal(approval?.profile, "deepseek");
 	assert.equal(approval?.pricing.version, "approval-fixture-v1");

@@ -97,8 +97,10 @@ export class ShadowCheckpoints {
 			const mode = statSync(join(this.workspace, f)).mode & 0o111 ? "100755" : "100644";
 			return `${mode} ${hashes[i]}\t${f}`;
 		});
-		this.git(["read-tree", "--empty"]);
+		// A missing index starts empty. update-index builds the full nonempty
+		// snapshot directly; only an empty file list needs an explicit empty index.
 		if (info.length) this.git(["update-index", "--index-info"], `${info.join("\n")}\n`);
+		else this.git(["read-tree", "--empty"]);
 		const tree = this.git(["write-tree"]).trim();
 		return { tree, files: files.length, skippedSymlinks, durationMs: Date.now() - t0 };
 	}

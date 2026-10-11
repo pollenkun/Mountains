@@ -1,7 +1,18 @@
-import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import type { Risk, ToolDefinition, ToolResult } from "./types.ts";
 import { isValidUtf8, sha256, ToolError } from "./workspace.ts";
+import { findWindowsGitBash, nativeWindowsCommandHost, type WindowsCommandHost } from "./windows-command.ts";
+import type { WindowsJobCleanup as WindowsCleanupResult, WindowsJobProcess, spawnWindowsJob } from "./windows-job.ts";
+
+/** Trusted host/testing options. Existing callers need not provide them. */
+export interface CommandExecutionHost {
+	platform?: NodeJS.Platform;
+	environment?: NodeJS.ProcessEnv;
+	spawn?: typeof spawn;
+	windows?: WindowsCommandHost;
+	spawnWindowsJob?: typeof spawnWindowsJob;
+}
 
 export interface CommandLimits {
 	defaultTimeoutMs: number;
@@ -9,6 +20,10 @@ export interface CommandLimits {
 	headLines: number;
 	tailLines: number;
 	maxChars: number;
+	/** Optional host-side capture ceiling. Omitted retains the core/CLI capture behavior. */
+	captureMaxBytes?: number;
+	/** Explicit credential variable names, including names which do not look sensitive. */
+	omitEnv?: readonly string[];
 }
 
 export const DEFAULT_COMMAND_LIMITS: CommandLimits = { defaultTimeoutMs: 120_000, maxTimeoutMs: 600_000, headLines: 60, tailLines: 80, maxChars: 12_000 };
@@ -59,17 +74,151 @@ function shape(output: string, limits: CommandLimits): { text: string; truncated
 	return { text, truncated: true };
 }
 
-function killTree(pid: number | undefined, signal: NodeJS.Signals): void {
-	if (!pid) return;
-	try {
-		process.kill(-pid, signal);
-	} catch {
-		try {
-			process.kill(pid, signal);
-		} catch {
-			// 进程已退出
+interface ProcessIdentity {
+	pid: number;
+	ppid: number;
+	pgid: number;
+	birth: string;
+	executable?: string;
+	state: string;
+}
+
+/** Read identity metadata only: do not collect command arguments or environment. */
+async function processSnapshot(environment: NodeJS.ProcessEnv): Promise<Map<number, ProcessIdentity> | undefined> {
+	const found = new Map<number, ProcessIdentity>();
+	if (process.platform === "linux") {
+		let entries: string[];
+		try { entries = readdirSync("/proc"); } catch { return undefined; }
+		for (const entry of entries) {
+			if (!/^\d+$/.test(entry)) continue;
+			try {
+				const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+				// comm can contain spaces and parentheses; fields after its last ')' start at state.
+				const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+				if (!/^\d+$/.test(fields[19] ?? "")) continue;
+				const pid = Number(entry), ppid = Number(fields[1]), pgid = Number(fields[2]);
+				if (pid > 1 && Number.isInteger(ppid) && Number.isInteger(pgid)) {
+					found.set(pid, { pid, ppid, pgid, birth: fields[19]!, state: fields[0]! });
+				}
+			} catch { /* A process can exit during the snapshot. */ }
 		}
+		return found;
 	}
+	if (process.platform !== "darwin") return undefined;
+	const output = await new Promise<string | undefined>(resolve => {
+		let settled = false;
+		const finish = (value: string | undefined) => {
+			if (settled) return;
+			settled = true; clearTimeout(deadline); resolve(value);
+		};
+		// A denied spawn can throw before execFile installs its error callback.
+		// Also bound this observation itself: it must never block command termination.
+		const deadline = setTimeout(() => finish(undefined), 1100);
+		try {
+			execFile("/bin/ps", ["-axo", "pid=,ppid=,pgid=,stat=,lstart=,comm="], {
+				encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024,
+				env: { ...environment, LC_ALL: "C" },
+			}, (error, stdout) => finish(error ? undefined : stdout));
+		} catch { finish(undefined); }
+	});
+	if (output === undefined) return undefined;
+	for (const line of output.split("\n")) {
+		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/.exec(line);
+		if (!match) continue;
+		const pid = Number(match[1]);
+		if (pid > 1) found.set(pid, { pid, ppid: Number(match[2]), pgid: Number(match[3]), state: match[4]!, birth: match[5]!.replace(/\s+/g, " "), executable: match[6]! });
+	}
+	return found;
+}
+
+function sameProcess(a: ProcessIdentity, b: ProcessIdentity): boolean {
+	return a.birth === b.birth && a.executable === b.executable && !b.state.startsWith("Z");
+}
+
+/** Track only ancestry observed while each recorded parent still has its identity. */
+function commandProcesses(child: ChildProcess, environment: NodeJS.ProcessEnv) {
+	const known = new Map<number, ProcessIdentity>();
+	const retired = new Set<number>();
+	let anchored = false;
+	let stopping: NodeJS.Signals | undefined;
+	let finishing = false;
+	let closed = false;
+	let active: Promise<void> | undefined;
+	const childAlive = () => child.pid !== undefined && child.exitCode === null && child.signalCode === null;
+	const refresh = async () => {
+		const snapshot = await processSnapshot(environment);
+		if (!snapshot) return undefined;
+		const root = child.pid === undefined ? undefined : snapshot.get(child.pid);
+		if (!anchored && childAlive() && root?.ppid === process.pid && root.pgid === child.pid && !root.state.startsWith("Z")) {
+			known.set(root.pid, root); anchored = true;
+		}
+		const live = new Map<number, ProcessIdentity>();
+		for (const [pid, prior] of known) {
+			if (retired.has(pid)) continue;
+			// A ps request may have started before the child's exit event arrived.
+			if (pid === child.pid && !childAlive()) { retired.add(pid); continue; }
+			const current = snapshot.get(pid);
+			// A direct child may exec another program without becoming a new process.
+			if (pid === child.pid && childAlive() && current?.birth === prior.birth && current.ppid === process.pid) {
+				if (current.executable === undefined) delete prior.executable; else prior.executable = current.executable;
+			}
+			if (!current || !sameProcess(prior, current)) { retired.add(pid); continue; }
+			live.set(pid, current);
+		}
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const current of snapshot.values()) {
+				if (known.has(current.pid) || current.pid === process.pid || current.state.startsWith("Z") || !live.has(current.ppid)) continue;
+				known.set(current.pid, current); live.set(current.pid, current); changed = true;
+			}
+		}
+		return live;
+	};
+	const send = (live: Map<number, ProcessIdentity> | undefined, value: NodeJS.Signals) => {
+		// The original detached group is a fallback only while the actual child is live.
+		// After close, never signal its old PID or PGID without a surviving identity.
+		let groupSignalled = false;
+		if (childAlive() && (!live || live.has(child.pid!))) {
+			try { process.kill(-child.pid!, value); groupSignalled = true; } catch { try { child.kill(value); } catch { /* Already exited. */ } }
+		}
+		if (live) for (const current of live.values()) {
+			// Root signalling uses its live ChildProcess/group above, never a snapshot's old PID.
+			if (current.pid === child.pid) continue;
+			if (groupSignalled && current.pgid === child.pid) continue;
+			try { process.kill(current.pid, value); } catch { /* Already exited. */ }
+		}
+	};
+	const observe = (value?: NodeJS.Signals) => {
+		// Cancel/close requests queue behind the one active snapshot. Periodic scans do not queue.
+		const next = (active ?? Promise.resolve()).then(async () => {
+			if (closed) return;
+			const requested = value ?? stopping;
+			const live = await refresh();
+			if (closed) return;
+			if (requested) send(live, requested);
+		});
+		active = next.catch(() => { /* Failed identity reads cannot authorize descendant signals. */ });
+		const current = active;
+		void current.then(() => { if (active === current) active = undefined; });
+		return current;
+	};
+	void observe();
+	const scan = setInterval(() => { if (!finishing && !active) void observe(); }, 200);
+	scan.unref();
+	return {
+		signal(value: NodeJS.Signals) {
+			if (closed) return Promise.resolve();
+			stopping = value;
+			// Preserve ancestry by observing before TERM. At the escalation deadline,
+			// the live ChildProcess itself is sufficient to stop its original group;
+			// a slow process-table read must not delay that last attempt.
+			if (value === "SIGKILL") send(undefined, value);
+			return observe(value);
+		},
+		async close() { finishing = true; clearInterval(scan); await observe("SIGKILL"); closed = true; },
+		dispose() { finishing = true; closed = true; clearInterval(scan); },
+	};
 }
 
 function fail(message: string, details: Record<string, unknown> = {}): ToolResult {
@@ -77,7 +226,17 @@ function fail(message: string, details: Record<string, unknown> = {}): ToolResul
 }
 
 /** Only advertise recovery when the caller also registers context_expand. Archival is independent. */
-export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS, recovery: { contextExpand?: boolean; archiveSearch?: boolean; lean?: boolean } = {}): ToolDefinition {
+export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS, recovery: { contextExpand?: boolean; archiveSearch?: boolean; lean?: boolean } = {}, execution: CommandExecutionHost = {}): ToolDefinition {
+	if (limits.captureMaxBytes !== undefined && (!Number.isSafeInteger(limits.captureMaxBytes) || limits.captureMaxBytes <= 0)) {
+		throw new Error("captureMaxBytes 必须是有限正整数");
+	}
+	if (limits.omitEnv !== undefined && (!Array.isArray(limits.omitEnv) || limits.omitEnv.some(name => typeof name !== "string" || !name || /[\0=]/.test(name)))) {
+		throw new Error("omitEnv 必须包含有效的环境变量名");
+	}
+	// Pin the host setting; changing the caller's object later cannot bypass validation.
+	const platform = execution.platform ?? process.platform;
+	const captureMaxBytes = limits.captureMaxBytes;
+	const omitEnv = new Set((limits.omitEnv ?? []).map(name => platform === "win32" ? name.toUpperCase() : name));
 	return {
 		name: "command_run",
 		logicalName: "command.run",
@@ -114,39 +273,149 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 					return fail(`命令未获批准：${display}`, { command: display, cwd: rel, risk, approved: false });
 				}
 				const started = Date.now();
-				const [prog, ...rest] = script ? ["bash", "-c", script] : (argv as string[]);
-				const child = spawn(prog as string, rest, { cwd, detached: true, env: scrubEnv(process.env), stdio: ["ignore", "pipe", "pipe"] });
+				const environment = scrubEnv(execution.environment ?? process.env);
+				for (const name of Object.keys(environment)) if (omitEnv.has(platform === "win32" ? name.toUpperCase() : name)) delete environment[name];
+				const windowsHost = platform === "win32" ? execution.windows ?? nativeWindowsCommandHost() : undefined;
+				const bash = script && windowsHost ? findWindowsGitBash(environment, windowsHost) : "bash";
+				if (script && !bash) return fail("复杂命令需要 Git for Windows 的 Bash。请安装 Git for Windows 后重试；不会改用 PowerShell。", { command: display, cwd: rel, risk });
+				const [prog, ...rest] = script ? [bash!, "-c", script] : (argv as string[]);
+				const launchJob = windowsHost ? execution.spawnWindowsJob ?? (await import("./windows-job.ts")).spawnWindowsJob : undefined;
+				if (ctx.signal.aborted) return fail("命令已取消，未启动进程", { command: display, cwd: rel, risk, cancelled: true });
+				ctx.assertExecutionAllowed?.();
+				const jobChild: WindowsJobProcess | undefined = launchJob?.(prog as string, rest, { cwd, env: environment });
+				const child = jobChild ?? (execution.spawn ?? spawn)(prog as string, rest, { cwd, detached: true, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+				const jobResult = async (operation: "stop" | "finish"): Promise<WindowsCleanupResult> => {
+					try { return await jobChild!.windowsJob[operation](); }
+					catch { return { confirmed: false, error: "Windows 进程清理失败，未确认后台进程已全部结束" }; }
+				};
+				const processes = jobChild ? { signal(_value: NodeJS.Signals) { return jobResult("stop"); }, close() { return jobResult("finish"); }, dispose() {} } : commandProcesses(child, environment);
+				let windowsCleanup: WindowsCleanupResult | undefined;
+				let forceWindowsExit: (() => void) | undefined;
+				let posixCleanupError: string | undefined;
+				let forcePosixExit: (() => void) | undefined;
+				let posixDeadline: NodeJS.Timeout | undefined;
 				const chunks: Buffer[] = [];
-				child.stdout.on("data", (c: Buffer) => chunks.push(c));
-				child.stderr.on("data", (c: Buffer) => chunks.push(c));
+				let capturedBytes = 0;
+				let observedOutputBytes = 0;
+				let outputLimited = false;
 				let timedOut = false;
 				let cancelled = false;
-				const timer = setTimeout(() => {
+				let windowsStopping = false;
+				let escalation: NodeJS.Timeout | undefined;
+				let timer: NodeJS.Timeout | undefined;
+				const stop = (grace: number) => {
+					clearTimeout(timer);
+					if (jobChild) {
+						if (windowsStopping) return;
+						windowsStopping = true;
+						// The wrapper owns a Job Object; stopping it clears descendants too.
+						void processes.signal("SIGKILL").then(result => {
+							windowsCleanup = result as WindowsCleanupResult;
+							if (!windowsCleanup.confirmed && child.exitCode === null && child.signalCode === null) {
+								// Terminating the wrapper closes its non-inherited Job handle, but without confirmation
+								// this remains a reported cleanup failure, never a successful whole-tree claim.
+								try { child.kill("SIGKILL"); } catch { /* Failure remains visible below. */ }
+							}
+							forceWindowsExit?.();
+						});
+						return;
+					}
+					if (escalation) return; // A later timeout/abort cannot postpone the first deadline.
+					// Signals can be denied, or an escaped descendant can retain the pipes.
+					// Returning must not depend on those processes cooperating.
+					posixDeadline ??= setTimeout(() => forcePosixExit?.(), grace + 500);
+					void processes.signal("SIGTERM");
+					escalation = setTimeout(() => { void processes.signal("SIGKILL"); }, grace);
+					escalation.unref();
+				};
+				const capture = (chunk: Buffer) => {
+					observedOutputBytes += chunk.length;
+					if (outputLimited) return;
+					const remaining = captureMaxBytes === undefined ? chunk.length : captureMaxBytes - capturedBytes;
+					if (chunk.length <= remaining) {
+						chunks.push(chunk); capturedBytes += chunk.length;
+						return;
+					}
+					// Copy only the retained prefix, rather than keeping a large backing buffer alive.
+					if (remaining > 0) { chunks.push(Buffer.from(chunk.subarray(0, remaining))); capturedBytes += remaining; }
+					outputLimited = true;
+					stop(1000);
+				};
+				child.stdout.on("data", capture);
+				child.stderr.on("data", capture);
+				timer = setTimeout(() => {
 					timedOut = true;
-					killTree(child.pid, "SIGTERM");
-					setTimeout(() => killTree(child.pid, "SIGKILL"), 2000).unref();
+					stop(2000);
 				}, timeout);
 				const onAbort = () => {
 					cancelled = true;
-					killTree(child.pid, "SIGTERM");
-					setTimeout(() => killTree(child.pid, "SIGKILL"), 1000).unref();
+					stop(1000);
 				};
 				ctx.signal.addEventListener("abort", onAbort, { once: true });
 				const exit: { code: number | null; signal: NodeJS.Signals | null; spawnError?: string } = await new Promise((resolve) => {
-					child.on("error", (e) => resolve({ code: null, signal: null, spawnError: String(e) }));
-					child.on("close", (code, signal) => resolve({ code, signal }));
+					let settled = false;
+					let drainTimer: NodeJS.Timeout | undefined;
+					const settle = (result: { code: number | null; signal: NodeJS.Signals | null; spawnError?: string }) => {
+						if (settled) return;
+						settled = true; clearTimeout(drainTimer); clearTimeout(posixDeadline); resolve(result);
+					};
+					child.on("error", (e) => settle({ code: null, signal: null, spawnError: String(e) }));
+					child.on("close", (code, signal) => settle({ code, signal }));
+					if (jobChild) {
+						forceWindowsExit = () => {
+							if (settled || drainTimer) return;
+							// A surviving child can inherit stdout/stderr after its parent exits.
+							// Wait briefly for normal draining, then report incomplete cleanup instead of hanging the caller.
+							drainTimer = setTimeout(() => {
+								windowsCleanup = { confirmed: false,
+									error: windowsCleanup?.error ?? "父进程已结束但输出管道未关闭，未确认后台进程已全部结束" };
+								child.stdout.destroy(); child.stderr.destroy(); child.unref();
+								settle({ code: child.exitCode, signal: child.signalCode });
+							}, 500);
+						};
+						child.on("exit", () => {
+							void processes.close().then(result => { windowsCleanup = result as WindowsCleanupResult; forceWindowsExit?.(); });
+						});
+						if (ctx.signal.aborted) onAbort();
+					} else {
+						forcePosixExit = () => {
+							if (settled) return;
+							posixCleanupError = "进程清理未确认，输出可能不完整；未对无法确认身份的残留进程发送信号";
+							// Invalidate in-flight observations before returning, including a late ps callback.
+							processes.dispose(); clearTimeout(escalation);
+							child.stdout.destroy(); child.stderr.destroy(); child.unref();
+							settle({ code: child.exitCode, signal: child.signalCode });
+						};
+						child.on("exit", () => {
+							// close waits for inherited stdout/stderr, not just the direct child's exit.
+							// Clean only verified descendants; never guess that an exited PID still owns its old group.
+							void processes.signal("SIGKILL");
+							posixDeadline ??= setTimeout(() => forcePosixExit?.(), 500);
+						});
+						if (ctx.signal.aborted) onAbort();
+					}
 				});
 				clearTimeout(timer);
+				clearTimeout(escalation);
 				ctx.signal.removeEventListener("abort", onAbort);
-				// 进程组里可能还有后台子进程：统一清理
-				killTree(child.pid, "SIGKILL");
-				const raw = Buffer.concat(chunks);
+				// Recheck captured descendants even when the original parent has already exited.
+				if (jobChild) windowsCleanup ??= await processes.close() as WindowsCleanupResult;
+				else if (!posixCleanupError) {
+					let cleanupDeadline: NodeJS.Timeout | undefined;
+					const completed = await Promise.race([
+						processes.close().then(() => true),
+						new Promise<false>(resolve => { cleanupDeadline = setTimeout(() => resolve(false), 1500); }),
+					]);
+					clearTimeout(cleanupDeadline); processes.dispose();
+					if (!completed) posixCleanupError = "进程清理超时，未确认后台进程已全部结束";
+				}
+				const raw = Buffer.concat(chunks, capturedBytes);
 				// Preserve bytes before deriving any display text. stdout/stderr are combined
 				// in observed data-event order, not claimed to be an OS-wide total order.
 				let ref: string | undefined;
 				let archiveError: string | undefined;
 				try {
-					ref = ctx.blobs?.put(raw, { kind: "raw", source: { tool: "command_run", toolCallId: ctx.toolCallId, commandSha256: sha256(display), commandPreview: display.slice(0, 512), cwd: rel, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, streamOrder: "observed-data-events" } });
+					ref = ctx.blobs?.put(raw, { kind: "raw", source: { tool: "command_run", toolCallId: ctx.toolCallId, commandSha256: sha256(display), commandPreview: display.slice(0, 512), cwd: rel, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, streamOrder: "observed-data-events", ...(captureMaxBytes !== undefined || posixCleanupError ? { captureComplete: !outputLimited && !posixCleanupError } : {}) } });
 					if (!ref) archiveError = "archive storage unavailable";
 				} catch { archiveError = "archive write or verification failed"; }
 				const invalidUtf8 = !isValidUtf8(raw);
@@ -155,24 +424,32 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				const durationMs = Date.now() - started;
 				const status = exit.spawnError
 					? `failed to start: ${exit.spawnError}`
+					: outputLimited
+						? `output capture exceeded ${captureMaxBytes} bytes; command stopped; remaining output discarded`
 					: timedOut
 						? `timed out after ${timeout}ms`
 						: cancelled
 							? "cancelled"
 							: `exit code ${exit.code ?? `signal ${exit.signal}`}`;
-				const recoveryHint = (truncated || invalidUtf8)
+				const recoveryHint = outputLimited || posixCleanupError
+					? ref ? `; partialOutputRef=${ref}; incomplete capture only` : `; partial output archive unavailable: ${archiveError}`
+					: (truncated || invalidUtf8)
 					? ref ? (recovery.lean && !recovery.contextExpand ? "" : `; fullOutputRef=${ref}; ${recovery.contextExpand ? "recover with context_expand" : "audit only"}`) : `; full output unavailable: ${archiveError}`
 					: "";
 				const decoding = invalidUtf8 ? "; invalid UTF-8: display uses replacement characters" + (ref && recovery.contextExpand ? "; archived original bytes can be recovered as base64" : "") : "";
-				const searchHint = ref && recovery.contextExpand && recovery.archiveSearch && (truncated || invalidUtf8)
+				const searchHint = !outputLimited && !posixCleanupError && ref && recovery.contextExpand && recovery.archiveSearch && (truncated || invalidUtf8)
 					? `; search archived lines with context_search ref=${ref} toolCallId=${JSON.stringify(ctx.toolCallId)}` : "";
-				const modelContent = `$ ${display}\n[${status}; ${durationMs}ms${truncated ? `; output truncated, full ${output.length} chars` : ""}${decoding}${recoveryHint}${searchHint}]\n${text}`;
+				const cleanupHint = posixCleanupError ? `; ${posixCleanupError}` : windowsCleanup && !windowsCleanup.confirmed ? `; ${windowsCleanup.error ?? "未确认后台进程已全部结束"}` : "";
+				const modelContent = `$ ${display}\n[${status}; ${durationMs}ms${truncated ? outputLimited || posixCleanupError ? `; display truncated, captured ${output.length} chars` : `; output truncated, full ${output.length} chars` : ""}${decoding}${recoveryHint}${searchHint}${cleanupHint}]\n${text}`;
 				return {
-					ok: !exit.spawnError && !timedOut && !cancelled && exit.code === 0,
+					ok: !exit.spawnError && !timedOut && !cancelled && !outputLimited && !posixCleanupError && exit.code === 0 && windowsCleanup?.confirmed !== false,
 					modelContent,
-					summary: `运行 ${display.slice(0, 60)}（${status}）`,
-					details: { command: display, cwd: rel, risk, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, durationMs, outputChars: output.length, outputBytes: raw.length, outputSha256: sha256(raw), invalidUtf8, archiveError, streamOrder: "observed-data-events", toolCallId: ctx.toolCallId, truncated },
-					...(ref ? { fullOutputRef: ref } : {}),
+					summary: `运行 ${display.slice(0, 60)}（${status}${cleanupHint}）`,
+					details: { command: display, cwd: rel, risk, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, durationMs, outputChars: output.length, outputBytes: raw.length, outputSha256: sha256(raw), invalidUtf8, archiveError, streamOrder: "observed-data-events", toolCallId: ctx.toolCallId, truncated,
+						...(windowsCleanup ? { processTreeCleanupConfirmed: windowsCleanup.confirmed, processTreeCleanupError: windowsCleanup.error } : {}),
+						...(posixCleanupError ? { processTreeCleanupConfirmed: false, processTreeCleanupError: posixCleanupError, captureComplete: false, ...(ref ? { partialOutputRef: ref } : {}) } : {}),
+						...(captureMaxBytes !== undefined ? { captureMaxBytes, captureComplete: !outputLimited && !posixCleanupError, outputLimited, observedOutputBytes, ...(outputLimited && ref ? { partialOutputRef: ref } : {}) } : {}) },
+					...(ref && !outputLimited && !posixCleanupError ? { fullOutputRef: ref } : {}),
 				};
 			} catch (err) {
 				return fail(err instanceof ToolError ? err.message : String(err));

@@ -32,6 +32,7 @@ export interface ToolResult {
 	summary: string;
 	/** 给界面的完整详情 */
 	details: Record<string, unknown>;
+	/** Complete source lines actually present in modelContent, never merely requested/omitted ranges. */
 	reads?: ReadRecord[];
 	writes?: WriteRecord[];
 	/** 不可变的完整原始字节引用。与驱动另存的模型展示文字引用不同。 */
@@ -44,10 +45,14 @@ export interface ToolContext {
 	blobs?: BlobStore;
 	signal: AbortSignal;
 	toolCallId: string;
-	/** 命令审批（未批准不得启动进程） */
+	/** The engine will mark returned reads delivered only after publishing the result. Defaults to legacy immediate tracking. */
+	deferReadPublication?: boolean;
+	/** 操作审批（命令必须通过；文件写入在 approveFileWrites 开启时必须通过）。 */
 	approve(req: ApprovalRequest): Promise<"allow" | "deny">;
 	/** 写文件前的快照钩子（检查点） */
 	beforeWrite?(absPath: string): Promise<void>;
+	/** Optional final authorization check, immediately before a mutation or spawn. */
+	assertExecutionAllowed?(): void;
 }
 
 export interface ToolDefinition {

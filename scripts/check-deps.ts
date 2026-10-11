@@ -1,6 +1,7 @@
 /**
  * 依赖方向检查：
- * - tui 只依赖 protocol；context 不依赖 tui 和 Pi；Pi 只能出现在 providers
+ * - Pi 的模型适配库只出现在 providers
+ * - context 不依赖界面；CLI 通过各包的公开接口连接引擎
  * - 每个包 import 的外部包必须在自己的 package.json 中声明（弥补 npm 提升造成的幽灵依赖）
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -14,7 +15,6 @@ const ALLOWED: Record<string, string[]> = {
 	checkpoints: [],
 	telemetry: ["@mountains/protocol"],
 	engine: ["@mountains/protocol", "@mountains/context", "@mountains/providers", "@mountains/tools", "@mountains/telemetry", "@mountains/checkpoints"],
-	tui: ["@mountains/protocol", "@earendil-works/pi-tui"],
 	cli: ["@mountains/protocol", "@mountains/engine", "@mountains/providers", "@mountains/tools", "@mountains/telemetry", "@mountains/context"],
 };
 
@@ -43,7 +43,8 @@ for (const { pkg, dir } of roots) {
 	const allowed = new Set(ALLOWED[pkg] ?? []);
 	for (const f of files) {
 		const text = readFileSync(f, "utf8");
-		for (const m of text.matchAll(/(?:import|export)[^'"]*from\s+["']([^"']+)["']|import\(["']([^"']+)["']\)/g)) {
+		// ObjC.import in a native bridge is a method call, not an npm dynamic import.
+		for (const m of text.matchAll(/(?:import|export)[^'"]*from\s+["']([^"']+)["']|(?<![\w$.])import\(["']([^"']+)["']\)/g)) {
 			const spec = m[1] ?? m[2] ?? "";
 			if (spec.startsWith(".") || spec.startsWith("node:")) continue;
 			const name = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : (spec.split("/")[0] ?? spec);

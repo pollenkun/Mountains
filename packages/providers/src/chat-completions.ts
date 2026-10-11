@@ -6,7 +6,7 @@
  * 显式思考参数；用自定义 fetch 复制响应流，拿到原始 SSE、原始 usage 与逐字的工具参数，并记录实际发出的请求体。
  *
  * base URL 指向本机兼容代理时，Pi 无法按 URL 识别供应商，所以兼容参数全部由能力表显式给出。
- * 思考参数与 OpenCode 1.18.32 对同一模型发出的保持一致（详见 docs/models.md）：
+ * 思考参数与 OpenCode 1.18.32 对同一模型发出的保持一致：
  * - deepseek：thinking {type} + reasoning_effort
  * - zai（GLM）：thinking {type:"enabled", clear_thinking:false}；effort 为 "default" 时不发 reasoning_effort（服务端默认 max）
  * - always-on（Kimi）：不发任何思考参数；temperature 固定 1
@@ -16,8 +16,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context as PiContext, Message as PiMessage, Model as PiModel } from "@earendil-works/pi-ai";
 import { stream as piStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
-import type { AssistantMessage, Message, ToolCall, ToolSpec, Usage } from "@mountains/protocol";
-import { capabilitiesFor, type Effort, type ModelCapabilities, type ProviderId, providerOf } from "./capabilities.ts";
+import type { AssistantMessage, Message, ModelBillingReceipt, ToolCall, ToolSpec, Usage } from "@mountains/protocol";
+import { capabilitiesFor, type Effort, type ModelCapabilities, type ProviderId, providerOf, responseModelMatches } from "./capabilities.ts";
+import { officialBillingReceipt, officialBillingReceiptRejected } from "./billing.ts";
 import { normalizeUsage, type RawUsage } from "./usage.ts";
 
 /** "default"：不发 reasoning_effort，使用服务端默认强度 */
@@ -66,6 +67,10 @@ export interface ModelResponse {
 	responseId: string | null;
 	rawUsage: RawUsage | null;
 	usage: Usage;
+	/** 官方接口附加的费用依据；缓存统计仍可为 unknown，消费端必须再次验证。 */
+	billingReceipt?: ModelBillingReceipt;
+	/** HOST 看到了显式坏账单/坏用量，费用消费端必须停止，不回退目录价。 */
+	billingReceiptRejected?: true;
 	httpStatus: number | null;
 	/** 实际发出的请求体（字节级原文） */
 	requestBody: string | null;
@@ -225,7 +230,7 @@ interface SseCapture {
 const THINKING_MAP = { minimal: null, low: "low", medium: null, high: "high", max: "max" } as const;
 
 function providerFor(modelId: string): ProviderId {
-	return capabilitiesFor(modelId)?.provider ?? providerOf(modelId) ?? "deepseek";
+	return capabilitiesFor(modelId)?.provider ?? providerOf(modelId) ?? "openai";
 }
 
 /**
@@ -233,22 +238,23 @@ function providerFor(modelId: string): ProviderId {
  * 否则会把思考内容降级成普通文本（transform-messages.ts 的 isSameModel），所以两处必须用同一个函数。
  */
 function piProviderName(modelId: string): string {
-	return { deepseek: "deepseek", zhipu: "zai", moonshot: "moonshotai-cn" }[providerFor(modelId)];
+	const provider = providerFor(modelId);
+	return provider === "zhipu" ? "zai" : provider === "moonshot" ? "moonshotai-cn" : provider;
 }
 
 /** 能力表 → Pi 的模型描述。未登记的模型按供应商前缀推断。 */
 function piModel(modelId: string, baseUrl: string, effort: EffortSetting): PiModel<"openai-completions"> {
 	const cap: ModelCapabilities | undefined = capabilitiesFor(modelId);
 	const provider = providerFor(modelId);
-	const format = cap?.thinkingFormat ?? (provider === "zhipu" ? "zai" : provider === "moonshot" ? "always-on" : "deepseek");
-	const sendsEffort = effort !== "default" && (cap ? cap.effortLevels.includes(effort) : format !== "always-on");
+	const format = cap?.thinkingFormat ?? (provider === "zhipu" ? "zai" : provider === "moonshot" ? "always-on" : provider === "deepseek" ? "deepseek" : "none");
+	const sendsEffort = effort !== "default" && (cap ? cap.effortLevels.includes(effort) : format !== "always-on" && format !== "none");
 	return {
 		id: modelId,
 		name: cap?.displayName ?? modelId,
 		api: "openai-completions",
 		provider: piProviderName(modelId),
 		baseUrl,
-		reasoning: true,
+		reasoning: format !== "none",
 		thinkingLevelMap: THINKING_MAP,
 		input: ["text"],
 		// 费用由 Mountains 按官方价格自行计算，这里只填占位
@@ -260,10 +266,10 @@ function piModel(modelId: string, baseUrl: string, effort: EffortSetting): PiMod
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: sendsEffort,
 			supportsUsageInStreaming: true,
-			maxTokensField: "max_tokens",
-			requiresReasoningContentOnAssistantMessages: true,
+			maxTokensField: cap?.maxTokensField ?? "max_tokens",
+			requiresReasoningContentOnAssistantMessages: cap?.requiresReasoningPassback ?? format !== "none",
 			// always-on 走 Pi 的 OpenAI 分支：supportsReasoningEffort 为 false 时不发任何思考参数
-			thinkingFormat: format === "always-on" ? "openai" : format,
+			thinkingFormat: format === "always-on" || format === "none" ? "openai" : format,
 			zaiToolStream: false,
 			supportsLongCacheRetention: false,
 			sendSessionAffinityHeaders: false,
@@ -282,6 +288,7 @@ function parseArgs(json: string): Record<string, unknown> {
 
 /** Mountains 消息 → Pi 上下文。时间戳固定为 0，避免任何非确定内容。 */
 function toPiContext(req: ModelRequest): PiContext {
+	const passback = capabilitiesFor(req.model)?.requiresReasoningPassback ?? ["deepseek", "zhipu", "moonshot"].includes(providerFor(req.model));
 	const messages: PiMessage[] = req.messages.map((m): PiMessage => {
 		if (m.role === "user") return { role: "user", content: m.content, timestamp: 0 };
 		if (m.role === "tool") {
@@ -295,7 +302,7 @@ function toPiContext(req: ModelRequest): PiContext {
 			} as PiMessage;
 		}
 		const content: unknown[] = [];
-		if (m.reasoning) content.push({ type: "thinking", thinking: m.reasoning, thinkingSignature: "reasoning_content" });
+		if (m.reasoning && passback) content.push({ type: "thinking", thinking: m.reasoning, thinkingSignature: "reasoning_content" });
 		if (m.content) content.push({ type: "text", text: m.content });
 		for (const tc of m.toolCalls) content.push({ type: "toolCall", id: tc.id, name: tc.name, arguments: parseArgs(tc.argumentsJson) });
 		return {
@@ -352,6 +359,7 @@ function parseSseInto(cap: SseCapture, text: string): void {
 export function thinkingSettingError(model: string, thinking: { enabled: boolean; effort: EffortSetting }): string | null {
 	const cap = capabilitiesFor(model);
 	if (!cap) return null;
+	if (cap.thinkingFormat === "none" && thinking.enabled) return `${model} 当前使用非思考模式，不能开启思考`;
 	if (cap.thinkingFormat === "always-on" && !thinking.enabled) return `${model} 始终思考，不能关闭`;
 	if (cap.thinkingFormat === "zai" && !thinking.enabled) return `${model} 只支持 thinking.type=enabled`;
 	if (thinking.effort !== "default" && !cap.effortLevels.includes(thinking.effort)) {
@@ -383,6 +391,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 		let localFailure: ExactLocalError | null = null;
 		let requestBody: string | null = null;
 		let httpStatus: number | null = null;
+		let billingTransportRejected = false;
 		let retryAfterMs: number | null = null;
 		const capture: SseCapture = {
 			firstByteAt: null,
@@ -446,6 +455,13 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 					throw localFailure;
 				}
 			} else res = await baseFetch(input, init);
+			// 账单只能归属于这个官方请求；跳转或 SDK 发往别处不能借用预设的身份。
+			const receiptProvider = req.model === "openai/gpt-4.1-mini" ? "https://openrouter.ai/api/v1" : req.model === "Qwen/Qwen2.5-7B-Instruct" ? "https://api.siliconflow.cn/v1" : null;
+			if (receiptProvider && [receiptProvider, `${receiptProvider}/`].includes(this.options.baseUrl)) {
+				const sentUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				const expectedUrl = `${receiptProvider}/chat/completions`;
+				if (sentUrl !== expectedUrl || res.redirected || res.url !== "" && res.url !== expectedUrl) billingTransportRejected = true;
+			}
 			httpStatus = res.status;
 			if (res.status === 429 || res.status >= 500) retryAfterMs = parseRetryAfter(res.headers);
 			if (!res.body) return res;
@@ -491,8 +507,16 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 				...(req.signal ? { signal: req.signal } : {}),
 				...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
 				onPayload: (payload: unknown) => {
-					const p = payload as { messages?: { role: string; tool_calls?: { id: string; function: { arguments: string } }[] }[]; user_id?: string };
-					if (req.userId) p.user_id = req.userId;
+					const p = payload as Record<string, unknown> & { messages?: { role: string; tool_calls?: { id: string; function: { arguments: string } }[] }[]; user_id?: string };
+					// 兼容服务器可能拒绝别家专属字段；非思考模型也不能收到历史思考内容。
+					if (cap?.thinkingFormat === "none" || !cap && providerFor(req.model) === "openai") {
+						for (const key of ["thinking", "reasoning_effort", "reasoning", "reasoning_content", "enable_thinking"]) delete p[key];
+						for (const msg of p.messages ?? []) for (const key of ["reasoning_content", "reasoning_details"]) delete (msg as unknown as Record<string, unknown>)[key];
+					}
+					// 固定参数来自能力表。例如 Qwen Plus 必须显式关闭默认思考。
+					for (const [key, value] of Object.entries(cap?.requestExtras ?? {})) p[key] = value;
+					// 旧三家的回放保留已有参数；通用预设不能继承 DeepSeek user_id。
+					if (req.userId && ["deepseek", "zhipu", "moonshot"].includes(providerFor(req.model))) p.user_id = req.userId;
 					if (req.verbatimToolArguments && p.messages) {
 						for (const msg of p.messages) {
 							for (const tc of msg.tool_calls ?? []) {
@@ -529,6 +553,10 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			if (exact && !transportAttempted) return localResponse(localFailure ?? new ExactLocalError(aborted ? "REQUEST_CANCELLED" : "REQUEST_BUILD_FAILED"));
 			const status: number | null = httpStatus;
 			const retryable = !aborted && (status === null || status === 429 || status >= 500);
+			const usage = normalizeUsage(providerFor(req.model), capture.usage);
+			const billingReceipt = !billingTransportRejected && capture.model !== null && responseModelMatches(req.model, capture.model)
+				? officialBillingReceipt(req.model, this.options.baseUrl, capture.usage, usage) : undefined;
+			const billingReceiptRejected = billingTransportRejected || officialBillingReceiptRejected(req.model, this.options.baseUrl, capture.usage, usage, capture.model);
 			return {
 				ok: !isError,
 				message: { role: "assistant", content: text, reasoning, toolCalls },
@@ -536,7 +564,9 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 				responseModel: capture.model,
 				responseId: capture.id,
 				rawUsage: capture.usage,
-				usage: normalizeUsage(providerFor(req.model), capture.usage),
+				usage,
+				...(billingReceipt ? { billingReceipt } : {}),
+				...(billingReceiptRejected ? { billingReceiptRejected: true as const } : {}),
 				httpStatus: status,
 				requestBody,
 				startedAt,

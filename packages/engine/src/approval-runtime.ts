@@ -1,4 +1,4 @@
-import { canonicalModel, normalizeUsage, usageInconsistency, type ModelAdapter, type ModelRequest, type ModelResponse } from "@mountains/providers";
+import { responseModelMatches, normalizeUsage, usageInconsistency, type ModelAdapter, type ModelRequest, type ModelResponse } from "@mountains/providers";
 import type { Usage } from "@mountains/protocol";
 import type { ApprovalSettings } from "./approval-settings.ts";
 
@@ -40,7 +40,7 @@ export function trustworthyUsage(u: Usage): boolean {
 
 export function approvalCharge(settings: ApprovalSettings, response: ModelResponse): { amount: number; nativeAmount: number } | null {
 	const u = response.usage;
-	if (!trustworthyUsage(u) || response.responseModel !== null && canonicalModel(response.responseModel) !== canonicalModel(settings.model)) return null;
+	if (!trustworthyUsage(u) || response.responseModel !== null && !responseModelMatches(settings.model, response.responseModel)) return null;
 	const p = settings.pricing;
 	const nativeAmount = (u.input! * p.inputPerMillion + u.cacheRead! * (p.cacheReadPerMillion ?? p.inputPerMillion) + (u.cacheWrite ?? 0) * p.inputPerMillion + u.output! * p.outputPerMillion) / 1_000_000;
 	const amount = nativeAmount * (settings.conversion?.rate ?? 1);

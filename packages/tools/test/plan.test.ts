@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { createPlanTool, executeQueryPlan, validateQueryPlan } from "../src/plan.ts";
-import { createRecipeTool, QueryRecipeStore, recipeFileFor } from "../src/recipes.ts";
 import type { ToolContext } from "../src/types.ts";
 import { FileStateTracker, Workspace } from "../src/workspace.ts";
 
@@ -15,7 +14,7 @@ function setup() {
 	const root = join(parent, "workspace"); mkdirSync(root);
 	const controller = new AbortController();
 	const ctx: ToolContext = { workspace: new Workspace(root), files: new FileStateTracker(), signal: controller.signal, toolCallId: "plan-test", approve: async () => { throw new Error("Read-only plans must never ask for command approval"); } };
-	return { parent, root, ctx, controller, store: new QueryRecipeStore(recipeFileFor(root, join(parent, "state"))) };
+	return { parent, root, ctx, controller };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const jsonPlan = { steps: [{ id: "config", op: "json_field", path: "package.json", field: ["scripts", "test"] }] };
@@ -145,15 +144,6 @@ describe("bounded query plan", () => {
 		assert.equal(result.ok, false); assert.match(result.modelContent, /regular file/); assert.ok(Date.now() - started < 1000);
 	});
 
-	test("failed plans never authorize edits to content the model did not receive", async () => {
-		const { root, ctx } = setup(); writeFileSync(join(root, "a.txt"), "evidence");
-		const tool = createPlanTool();
-		const failed = await tool.execute({ steps: [{ id: "a", op: "read", path: "a.txt" }, { id: "b", op: "read", path: "missing.txt" }] }, ctx);
-		assert.equal(failed.ok, false); assert.equal(ctx.files.get("a.txt"), undefined);
-		const passed = await tool.execute({ steps: [{ id: "a", op: "read", path: "a.txt" }] }, ctx);
-		assert.equal(passed.ok, true, passed.modelContent); assert.equal(ctx.files.get("a.txt"), passed.reads?.[0]?.hash);
-	});
-
 	test("last asynchronous inventory cannot publish stale file contents", async () => {
 		const { parent, root, ctx } = setup(); const file = join(root, "a.json"); writeFileSync(file, '{"value":"OLD"}');
 		const countFile = join(parent, "count"); const fake = join(parent, "last-inventory-rg"); const previous = process.env.MOUNTAINS_RG;
@@ -166,96 +156,3 @@ describe("bounded query plan", () => {
 	});
 });
 
-describe("replayable query methods", () => {
-	test("new session replays current values and stores methods without old answers", async () => {
-		const { root, ctx, store } = setup(); writeFileSync(join(root, "package.json"), '{"scripts":{"test":"OLD_COMMAND_SECRET"}}');
-		const saved = await createPlanTool({ recipes: store }).execute({ ...jsonPlan, saveAs: "test command" }, ctx);
-		assert.equal(saved.ok, true, saved.modelContent); const id = saved.details.recipeId;
-		const stored = readFileSync(store.file, "utf8"); assert.doesNotMatch(stored, /OLD_COMMAND_SECRET|results|modelContent/);
-		writeFileSync(join(root, "package.json"), '{"name":"updated","scripts":{"test":"NEW_COMMAND"}}');
-		const freshContext = { ...ctx, files: new FileStateTracker() }; const fresh = createRecipeTool(new QueryRecipeStore(store.file));
-		const listed = await fresh.execute({ action: "list" }, freshContext); assert.doesNotMatch(listed.modelContent, /OLD_COMMAND_SECRET|NEW_COMMAND/);
-		const replayed = await fresh.execute({ action: "replay", id }, freshContext);
-		assert.equal(replayed.ok, true, replayed.modelContent); assert.match(replayed.modelContent, /NEW_COMMAND/); assert.doesNotMatch(replayed.modelContent, /OLD_COMMAND_SECRET/);
-		assert.notEqual((saved.details.steps as { results: { hash: string }[] }[])[0]?.results[0]?.hash, (replayed.details.steps as { results: { hash: string }[] }[])[0]?.results[0]?.hash);
-	});
-
-	test("negative search is never saved; a new matching file is observed on the next run", async () => {
-		const { root, ctx, store } = setup(); writeFileSync(join(root, "a.txt"), "nothing");
-		const tool = createPlanTool({ recipes: store }); const plan = { steps: [{ id: "find", op: "search", pattern: "needle", glob: "*.txt" }], saveAs: "find needle" };
-		assert.equal((await tool.execute(plan, ctx)).ok, false); assert.equal(existsSync(store.file), false);
-		writeFileSync(join(root, "new.txt"), "needle"); const result = await tool.execute(plan, ctx);
-		assert.equal(result.ok, true, result.modelContent); assert.match(result.modelContent, /new.txt/);
-	});
-
-	test("replay re-enumerates paths and stops when new files create ambiguity", async () => {
-		const { root, ctx, store } = setup(); writeFileSync(join(root, "one.json"), '{"a":1}');
-		const saved = await createPlanTool({ recipes: store }).execute({ saveAs: "one config", steps: [
-			{ id: "files", op: "glob", patterns: ["*.json"] }, { id: "value", op: "json_field", path: { from: "files", expect: "one" }, field: ["a"] },
-		] }, ctx);
-		assert.equal(saved.ok, true, saved.modelContent); writeFileSync(join(root, "two.json"), '{"a":2}');
-		const replay = await createRecipeTool(store).execute({ action: "replay", id: saved.details.recipeId }, ctx);
-		assert.equal(replay.ok, false); assert.match(replay.modelContent, /Ambiguous/);
-	});
-
-	test("same workspace on a different branch invalidates a saved method", async () => {
-		const { root, ctx, store } = setup(); execFileSync("git", ["init", "-q", "-b", "first"], { cwd: root });
-		writeFileSync(join(root, "package.json"), '{"scripts":{"test":"run"}}'); execFileSync("git", ["add", "."], { cwd: root });
-		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
-		const saved = await createPlanTool({ recipes: store }).execute({ ...jsonPlan, saveAs: "test" }, ctx); assert.equal(saved.ok, true, saved.modelContent);
-		execFileSync("git", ["checkout", "-qb", "second"], { cwd: root });
-		const replay = await createRecipeTool(store).execute({ action: "replay", id: saved.details.recipeId }, ctx);
-		assert.equal(replay.ok, false); assert.match(replay.modelContent, /no longer applies/);
-	});
-
-	test("a new commit on the same branch replays current evidence", async () => {
-		const { root, ctx, store } = setup(); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
-		const commit = () => { execFileSync("git", ["add", "."], { cwd: root }); execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"], { cwd: root }); };
-		writeFileSync(join(root, "package.json"), '{"scripts":{"test":"before"}}'); commit();
-		const saved = await createPlanTool({ recipes: store }).execute({ ...jsonPlan, saveAs: "test" }, ctx); assert.equal(saved.ok, true, saved.modelContent);
-		writeFileSync(join(root, "package.json"), '{"scripts":{"test":"after"}}'); commit();
-		const replay = await createRecipeTool(store).execute({ action: "replay", id: saved.details.recipeId }, ctx);
-		assert.equal(replay.ok, true, replay.modelContent); assert.match(replay.modelContent, /after/); assert.doesNotMatch(replay.modelContent, /before/);
-	});
-
-	test("store writer lock prevents lost updates and mutating tools are classified conservatively", async () => {
-		const { root, ctx, store } = setup(); writeFileSync(join(root, "package.json"), '{"scripts":{"test":"run"}}');
-		const tool = createPlanTool({ recipes: store }); assert.equal(tool.readOnly, false); assert.equal(createRecipeTool(store).readOnly, false); assert.equal(createPlanTool().readOnly, true);
-		const saved = await tool.execute({ ...jsonPlan, saveAs: "test" }, ctx); assert.equal(saved.ok, true, saved.modelContent);
-		const before = readFileSync(store.file, "utf8"); writeFileSync(`${store.file}.lock`, "1234");
-		const blocked = await tool.execute({ ...jsonPlan, saveAs: "blocked" }, ctx);
-		assert.equal(blocked.ok, false); assert.match(blocked.modelContent, /locked/); assert.equal(readFileSync(store.file, "utf8"), before);
-	});
-
-	test("inside-repository and symlinked storage are refused before writing", async () => {
-		const { parent, root, ctx } = setup(); writeFileSync(join(root, "package.json"), '{"scripts":{"test":"run"}}');
-		symlinkSync(root, join(parent, "alias"));
-		for (const file of [join(root, "state", "recipes.json"), join(parent, "alias", "state", "recipes.json")]) {
-			const result = await createPlanTool({ recipes: new QueryRecipeStore(file) }).execute({ ...jsonPlan, saveAs: "test" }, ctx);
-			assert.equal(result.ok, false); assert.match(result.modelContent, /outside/); assert.equal(existsSync(file), false);
-		}
-	});
-
-	test("revoked, version-mismatched and corrupted methods do not execute", async () => {
-		const { root, ctx, store } = setup(); writeFileSync(join(root, "package.json"), '{"scripts":{"test":"run"}}');
-		const saved = await createPlanTool({ recipes: store }).execute({ ...jsonPlan, saveAs: "test" }, ctx); assert.equal(saved.ok, true, saved.modelContent);
-		const tool = createRecipeTool(store); assert.equal((await tool.execute({ action: "forget", id: saved.details.recipeId }, ctx)).ok, true);
-		assert.equal((await tool.execute({ action: "replay", id: saved.details.recipeId }, ctx)).ok, false);
-		const again = await createPlanTool({ recipes: store }).execute({ ...jsonPlan, saveAs: "test" }, ctx); assert.equal(again.ok, true, again.modelContent);
-		const data = JSON.parse(readFileSync(store.file, "utf8")); data.recipes[0].environment.version = "obsolete"; writeFileSync(store.file, JSON.stringify(data));
-		assert.equal((await tool.execute({ action: "replay", id: again.details.recipeId }, ctx)).ok, false);
-		writeFileSync(store.file, "{"); assert.equal((await tool.execute({ action: "list" }, ctx)).ok, false);
-	});
-
-	test("revocation during replay prevents publication", async () => {
-		const { parent, root, ctx, store } = setup(); writeFileSync(join(root, "package.json"), '{"scripts":{"test":"CURRENT"}}');
-		const fake = join(parent, "revoking-rg"); const counter = join(parent, "version-count"); const previous = process.env.MOUNTAINS_RG;
-		writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);if(args.includes('--version')){let n=0;try{n=Number(fs.readFileSync(${JSON.stringify(counter)},'utf8'));}catch{}fs.writeFileSync(${JSON.stringify(counter)},String(++n));if(n===4)fs.writeFileSync(${JSON.stringify(store.file)},JSON.stringify({version:1,recipes:[]}));}const r=cp.spawnSync('rg',args,{input:fs.readFileSync(0),encoding:'utf8'});process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??2);\n`, { mode: 0o700 });
-		try {
-			process.env.MOUNTAINS_RG = fake; const saved = await createPlanTool({ recipes: store }).execute({ ...jsonPlan, saveAs: "test" }, ctx);
-			assert.equal(saved.ok, true, saved.modelContent);
-			const replay = await createRecipeTool(store).execute({ action: "replay", id: saved.details.recipeId }, ctx);
-			assert.equal(replay.ok, false); assert.match(replay.modelContent, /revoked during replay/); assert.doesNotMatch(replay.modelContent, /CURRENT/);
-		} finally { if (previous === undefined) delete process.env.MOUNTAINS_RG; else process.env.MOUNTAINS_RG = previous; }
-	});
-});

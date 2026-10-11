@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -111,8 +111,62 @@ test("command directory argument records identity and metadata changes", t => {
 	const before = snapshotApprovalAction(workspace, "command_run", args);
 	const binding = before.bindings.find(b => b.role === "argv-path")!;
 	assert.equal(binding.kind, "directory"); assert.ok(binding.mtimeNs); assert.ok(binding.ino); assert.ok(binding.dev);
+	assert.match(binding.entriesSha256!, /^[a-f0-9]{64}$/);
 	writeFileSync(join(root, "target", "new.txt"), "new entry");
-	assert.notEqual(before.fingerprint, snapshotApprovalAction(workspace, "command_run", args).fingerprint);
+	const after = snapshotApprovalAction(workspace, "command_run", args);
+	assert.notEqual(binding.entriesSha256, after.bindings.find(b => b.role === "argv-path")!.entriesSha256);
+	assert.notEqual(before.fingerprint, after.fingerprint);
+});
+
+test("direct directory entries invalidate approval even when the directory mtime is restored", t => {
+	const { root, workspace } = fixture(t);
+	const target = join(root, "target"); mkdirSync(target);
+	writeFileSync(join(target, "old.txt"), "old entry");
+	const fixedTime = new Date("2020-01-01T00:00:00.000Z");
+	utimesSync(target, fixedTime, fixedTime);
+	const args = { argv: ["ls", "target"] };
+	const before = snapshotApprovalAction(workspace, "command_run", args);
+	renameSync(join(target, "old.txt"), join(target, "new.txt"));
+	utimesSync(target, fixedTime, fixedTime);
+	const renamed = snapshotApprovalAction(workspace, "command_run", args);
+	const binding = (snapshot: typeof before) => snapshot.bindings.find(b => b.role === "argv-path")!;
+	assert.equal(binding(before).mtimeNs, binding(renamed).mtimeNs);
+	assert.notEqual(binding(before).entriesSha256, binding(renamed).entriesSha256);
+	assert.notEqual(before.fingerprint, renamed.fingerprint);
+	unlinkSync(join(target, "new.txt")); mkdirSync(join(target, "new.txt"));
+	utimesSync(target, fixedTime, fixedTime);
+	const replaced = snapshotApprovalAction(workspace, "command_run", args);
+	assert.equal(binding(renamed).mtimeNs, binding(replaced).mtimeNs);
+	assert.notEqual(binding(renamed).entriesSha256, binding(replaced).entriesSha256, "same entry name with a different type is detected");
+});
+
+test("directory entry digests are sorted and do not recurse or read child file contents", t => {
+	const { root, workspace } = fixture(t);
+	const target = join(root, "target"); mkdirSync(target);
+	writeFileSync(join(target, "z.txt"), "z"); writeFileSync(join(target, "a.txt"), "a");
+	mkdirSync(join(target, "nested")); writeFileSync(join(target, "nested", "inside.txt"), "original");
+	const args = { argv: ["ls", "target"] };
+	const before = snapshotApprovalAction(workspace, "command_run", args);
+	writeFileSync(join(target, "a.txt"), Buffer.alloc(APPROVAL_ACTION_LIMITS.fileBytes + 1));
+	writeFileSync(join(target, "nested", "additional.txt"), "not directly in the target");
+	const changedContents = snapshotApprovalAction(workspace, "command_run", args);
+	assert.equal(before.fingerprint, changedContents.fingerprint, "child contents and descendants remain explicitly unbound");
+	unlinkSync(join(target, "a.txt")); unlinkSync(join(target, "z.txt"));
+	writeFileSync(join(target, "a.txt"), "a"); writeFileSync(join(target, "z.txt"), "z");
+	const reordered = snapshotApprovalAction(workspace, "command_run", args);
+	const digest = (snapshot: typeof before) => snapshot.bindings.find(b => b.role === "argv-path")!.entriesSha256;
+	assert.equal(digest(before), digest(reordered), "creating identical entry names in a different order does not change their digest");
+});
+
+test("directory enumeration rejects excessive entries and total bytes before approving", t => {
+	const { root, workspace } = fixture(t);
+	const tooMany = join(root, "too-many"); mkdirSync(tooMany);
+	for (let n = 0; n <= APPROVAL_ACTION_LIMITS.directoryEntries; n++) writeFileSync(join(tooMany, String(n)), "");
+	assert.throws(() => snapshotApprovalAction(workspace, "command_run", { argv: ["ls", "too-many"] }), /directory entry limit/);
+	const longNames = join(root, "long-names"); mkdirSync(longNames);
+	// Below the entry cap, but both bounded passes exceed the total byte cap.
+	for (let n = 0; n < 300; n++) writeFileSync(join(longNames, String(n).padStart(4, "0") + "x".repeat(246)), "");
+	assert.throws(() => snapshotApprovalAction(workspace, "command_run", { argv: ["ls", "long-names"] }), /directory byte limit/);
 });
 
 test("shell script stays exact and declares incomplete dependency coverage without parsing it", t => {

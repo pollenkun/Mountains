@@ -11,15 +11,8 @@ import {
 	createCommandTool,
 	createEditTool,
 	createExpandTool,
-	createMemoryTool,
-	MemoryStore,
-	memoryFileFor,
-	renderMemory,
-	verifyMemory,
-	createGlobTool,
 	createOutlineTool,
 	createReadTool,
-	createSearchTool,
 	createWriteTool,
 	DEFAULT_READ_LIMITS,
 	FileStateTracker,
@@ -50,8 +43,6 @@ function setup(approve: (r: ApprovalRequest) => "allow" | "deny" = () => "allow"
 const read = createReadTool();
 const edit = createEditTool();
 const write = createWriteTool();
-const search = createSearchTool();
-const glob = createGlobTool();
 const cmd = createCommandTool();
 
 describe("file_read", () => {
@@ -62,19 +53,21 @@ describe("file_read", () => {
 		writeFileSync(join(root, "中文 目录", "文件 一.txt"), text);
 		const r = await read.execute({ path: "中文 目录/文件 一.txt" }, ctx);
 		assert.ok(r.ok, r.modelContent);
-		assert.match(r.modelContent, /^中文 目录\/文件 一\.txt \| lines 1-120 of 300 \| sha256:/);
-		assert.match(r.modelContent, /\n120\t第 120 行$/);
-		assert.equal(r.details.truncated, true);
+		assert.match(r.modelContent, /^中文 目录\/文件 一\.txt \| lines 1-300 of 300 \| sha256:/);
+		assert.match(r.modelContent, /\n300\t第 300 行$/);
+		assert.equal(r.details.truncated, false, "默认 500 行，300 行的文件一次读完");
 		assert.equal(r.details.hash, sha256(text));
 		const r2 = await read.execute({ path: "中文 目录/文件 一.txt", startLine: 250, endLine: 900 }, ctx);
 		assert.match(r2.modelContent, /lines 250-300 of 300/);
 	});
 
-	test("单次最多约 400 行；超长单行截断；二进制拒绝", async () => {
+	test("单次最多 2000 行；不给范围时读整个文件（最多 2000 行）；超长单行截断；二进制拒绝", async () => {
 		const { root, ctx } = setup();
-		writeFileSync(join(root, "big.txt"), Array.from({ length: 1000 }, () => "x").join("\n"));
-		const r = await read.execute({ path: "big.txt", startLine: 1, endLine: 1000 }, ctx);
-		assert.match(r.modelContent, /lines 1-400 of 1000/);
+		writeFileSync(join(root, "big.txt"), Array.from({ length: 3000 }, () => "x").join("\n"));
+		const r = await read.execute({ path: "big.txt", startLine: 1, endLine: 3000 }, ctx);
+		assert.match(r.modelContent, /lines 1-2000 of 3000/);
+		const d = await read.execute({ path: "big.txt" }, ctx);
+		assert.match(d.modelContent, /lines 1-2000 of 3000/);
 		writeFileSync(join(root, "long.txt"), "a".repeat(5000));
 		const r2 = await read.execute({ path: "long.txt" }, ctx);
 		assert.match(r2.modelContent, /已截断/);
@@ -179,9 +172,6 @@ describe("file_outline（可选配置）", () => {
 		assert.deepEqual(r.modelContent.split("\n").slice(1), ["3\tclass A(Base):", "6\t    def f(self, a):", "7\t        def inner():", "11\tasync def g():"]);
 		writeFileSync(join(root, "notes.txt"), "hello\n");
 		assert.match((await outline.execute({ path: "notes.txt" }, ctx)).modelContent, /no definitions recognised/);
-		const { defaultTools } = await import("../src/index.ts");
-		assert.ok(!defaultTools().some((t) => t.name === "file_outline"));
-		assert.deepEqual(defaultTools({ outline: true }).map((t) => t.name).slice(0, 3), ["file_read", "file_outline", "content_search"]);
 	});
 
 	test("TypeScript：函数、类、接口与方法", async () => {
@@ -257,40 +247,6 @@ describe("file_edit / file_write", () => {
 		await read.execute({ path: "s.txt" }, ctx);
 		await edit.execute({ path: "s.txt", oldText: "a", newText: "b" }, ctx);
 		assert.equal(seen.length, 1);
-	});
-});
-
-describe("content_search / file_glob", () => {
-	test("搜索：结构化结果、遵守 .gitignore、分页", async () => {
-		const { root, ctx } = setup();
-		execFileSync("git", ["init", "-q"], { cwd: root });
-		writeFileSync(join(root, ".gitignore"), "ignored/\n");
-		mkdirSync(join(root, "ignored"));
-		writeFileSync(join(root, "ignored", "x.py"), "needle\n");
-		for (let i = 0; i < 60; i++) writeFileSync(join(root, `f${String(i).padStart(2, "0")}.py`), `a\nneedle ${i}\n`);
-		const r = await search.execute({ pattern: "needle" }, ctx);
-		assert.ok(r.ok, r.modelContent);
-		assert.match(r.modelContent, /^60 matches in 60 files \(showing 1-50\); next cursor: 50/);
-		assert.match(r.modelContent, /\nf00\.py:2:1: needle 0/);
-		assert.ok(!r.modelContent.includes("ignored/"));
-		const p2 = await search.execute({ pattern: "needle", cursor: 50 }, ctx);
-		assert.match(p2.modelContent, /showing 51-60/);
-	});
-
-	test("glob：排序确定、遵守 .gitignore、不跟随越界符号链接", async () => {
-		const { root, ctx } = setup();
-		execFileSync("git", ["init", "-q"], { cwd: root });
-		writeFileSync(join(root, ".gitignore"), "build/\n");
-		mkdirSync(join(root, "src"));
-		mkdirSync(join(root, "build"));
-		writeFileSync(join(root, "src", "b.ts"), "");
-		writeFileSync(join(root, "src", "a.ts"), "");
-		writeFileSync(join(root, "build", "c.ts"), "");
-		const outside = mkdtempSync(join(tmpdir(), "outside-"));
-		writeFileSync(join(outside, "evil.ts"), "");
-		symlinkSync(outside, join(root, "src", "linkdir"));
-		const r = await glob.execute({ patterns: ["**/*.ts"] }, ctx);
-		assert.equal(r.modelContent, "2 files (showing 1-2)\nsrc/a.ts\nsrc/b.ts");
 	});
 });
 
@@ -383,62 +339,6 @@ describe("context_expand：按引用取回被移出上下文的原文", () => {
 		assert.equal((await expand.execute({ ref, offset: 0 }, ctx)).ok, false);
 		assert.equal((await expand.execute({ ref: "blob_ffffffffffffffff" }, ctx)).ok, false);
 		assert.equal(expand.readOnly, true);
-	});
-});
-
-describe("memory_record 与可验证记忆", () => {
-	function withStore() {
-		const s = setup();
-		const store = new MemoryStore(join(s.root, "..", `${s.root.split("/").pop()}-mem`, "memory.jsonl"));
-		return { ...s, store, tool: createMemoryTool(store) };
-	}
-	test("记录时计算证据哈希；证据未变 → 有效，行整体上移 → 按新位置有效，内容改动 → 过期且不复述内容", async () => {
-		const { root, ctx, store, tool } = withStore();
-		writeFileSync(join(root, "conftest.py"), "import os\n\nif os.environ.get('SUITE') != '1':\n    raise SystemExit('run make suite')\n");
-		writeFileSync(join(root, "util.py"), "def helper():\n    return 1\n");
-		const r1 = await tool.execute({ note: "Tests need SUITE=1 (run `make suite`).", evidence: [{ path: "conftest.py", start_line: 3, end_line: 4 }] }, ctx);
-		assert.equal(r1.ok, true, r1.modelContent);
-		assert.match(r1.modelContent, /Recorded note m1 with evidence conftest.py:3-4/);
-		await tool.execute({ note: "Shared helper is util.helper().", evidence: [{ path: "util.py", start_line: 1, end_line: 2 }] }, ctx);
-		let v = verifyMemory(ctx.workspace, store.entries());
-		assert.deepEqual([v.valid.length, v.stale.length], [2, 0]);
-		// 上方插入两行：内容整体下移 → moved，新位置 5-6
-		writeFileSync(join(root, "conftest.py"), "# header\n# more\nimport os\n\nif os.environ.get('SUITE') != '1':\n    raise SystemExit('run make suite')\n");
-		// 改名：内容变了 → changed
-		writeFileSync(join(root, "util.py"), "def shared_helper():\n    return 1\n");
-		v = verifyMemory(ctx.workspace, store.entries());
-		assert.deepEqual(v.valid.map((x) => x.entry.id), ["m1"]);
-		assert.deepEqual(v.valid[0]?.checks.map((c) => [c.status, c.now?.startLine]), [["moved", 5]]);
-		assert.deepEqual(v.stale.map((x) => x.entry.id), ["m2"]);
-		const text = renderMemory(v) ?? "";
-		assert.match(text, /\[m1\] Tests need SUITE=1 \(run `make suite`\)\. \(evidence: conftest\.py:5-6\)/);
-		assert.match(text, /\[m2\] util\.py:1-2 \(changed\)/);
-		assert.doesNotMatch(text, /util\.helper/, "过期笔记不复述内容");
-		assert.equal(renderMemory(verifyMemory(ctx.workspace, [])), null);
-	});
-	test("replaces 替换旧笔记；参数校验", async () => {
-		const { root, ctx, store, tool } = withStore();
-		writeFileSync(join(root, "a.txt"), "one\ntwo\n");
-		await tool.execute({ note: "old", evidence: [{ path: "a.txt", start_line: 1, end_line: 1 }] }, ctx);
-		const r = await tool.execute({ note: "new", evidence: [{ path: "a.txt", start_line: 2, end_line: 2 }], replaces: "m1" }, ctx);
-		assert.match(r.modelContent, /Recorded note m2 \(replaces m1\)/);
-		assert.deepEqual(store.entries().map((e) => [e.id, e.text]), [["m2", "new"]]);
-		for (const bad of [
-			{ note: "", evidence: [{ path: "a.txt", start_line: 1, end_line: 1 }] },
-			{ note: "x", evidence: [] },
-			{ note: "x", evidence: [{ path: "a.txt", start_line: 2, end_line: 1 }] },
-			{ note: "x", evidence: [{ path: "a.txt", start_line: 1, end_line: 9 }] },
-			{ note: "x", evidence: [{ path: "missing.txt", start_line: 1, end_line: 1 }] },
-			{ note: "x", evidence: [{ path: "../outside.txt", start_line: 1, end_line: 1 }] },
-			{ note: "x", evidence: [{ path: "a.txt", start_line: 1, end_line: 1 }], replaces: "m9" },
-		]) {
-			assert.equal((await tool.execute(bad, ctx)).ok, false, JSON.stringify(bad));
-		}
-	});
-	test("默认存放位置按工作区区分，在 MOUNTAINS_HOME 下", () => {
-		assert.equal(memoryFileFor("/w/a", "/h"), memoryFileFor("/w/a", "/h"));
-		assert.notEqual(memoryFileFor("/w/a", "/h"), memoryFileFor("/w/b", "/h"));
-		assert.ok(memoryFileFor("/w/a", "/h").startsWith("/h/projects/"));
 	});
 });
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -19,6 +19,52 @@ function userGitFingerprint(dir: string): string {
 }
 
 describe("影子 Git 检查点", () => {
+	test("空清单与非空清单切换，删除的旧文件不会留在新快照中", (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-transitions-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace");
+		mkdirSync(ws);
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		const empty = ck.snapshot();
+		assert.equal(empty.files, 0);
+		writeFileSync(join(ws, "old.txt"), "original\n");
+		const first = ck.snapshot();
+		assert.deepEqual(ck.changedPaths(empty.tree, first.tree), [{ status: "A", path: "old.txt" }]);
+		rmSync(join(ws, "old.txt"));
+		writeFileSync(join(ws, "new.txt"), "replacement\n");
+		const replacement = ck.snapshot();
+		assert.equal(replacement.files, 1);
+		assert.deepEqual(ck.changedPaths(first.tree, replacement.tree), [
+			{ status: "A", path: "new.txt" }, { status: "D", path: "old.txt" },
+		]);
+		rmSync(join(ws, "new.txt"));
+		const emptyAgain = ck.snapshot();
+		assert.equal(emptyAgain.tree, empty.tree);
+		assert.deepEqual(ck.changedPaths(replacement.tree, emptyAgain.tree), [{ status: "D", path: "new.txt" }]);
+		assert.deepEqual(ck.restore(first.tree, ["old.txt"]).restored, ["old.txt"]);
+		assert.equal(readFileSync(join(ws, "old.txt"), "utf8"), "original\n");
+		assert.equal(ck.snapshot().tree, first.tree);
+	});
+
+	test("快照保留可执行位，并识别仅权限变化", { skip: process.platform === "win32" }, (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-modes-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace");
+		mkdirSync(ws);
+		const script = join(ws, "run.sh");
+		writeFileSync(script, "#!/bin/sh\nprintf 'ok\\n'\n");
+		chmodSync(script, 0o755);
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		const executable = ck.snapshot();
+		const treeEntry = (tree: string) => execFileSync("git", ["--git-dir", ck.gitDir, "ls-tree", tree, "--", "run.sh"], { encoding: "utf8" });
+		assert.match(treeEntry(executable.tree), /^100755 blob /);
+		chmodSync(script, 0o644);
+		const plain = ck.snapshot();
+		assert.match(treeEntry(plain.tree), /^100644 blob /);
+		assert.deepEqual(ck.changedPaths(executable.tree, plain.tree), [{ status: "M", path: "run.sh" }]);
+		assert.equal(treeEntry(executable.tree).split(/\s+/)[2], treeEntry(plain.tree).split(/\s+/)[2], "内容不变，只记录权限变化");
+	});
+
 	test("多文件修改撤回后逐字节一致；不改动用户的 index/refs/stash/config", () => {
 		const ws = mkdtempSync(join(tmpdir(), "ckpt-ws-"));
 		const data = mkdtempSync(join(tmpdir(), "ckpt-data-"));

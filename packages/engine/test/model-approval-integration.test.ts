@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { EngineEvent } from "@mountains/protocol";
 import type { ModelAdapter, ModelRequest, ModelResponse } from "@mountains/providers";
-import { defaultTools, type ToolDefinition } from "@mountains/tools";
+import { generalTools, type ToolDefinition } from "@mountains/tools";
 import { AgentSession, type EngineOptions } from "../src/driver.ts";
 import { BudgetGuard } from "../src/policy.ts";
 import { ScriptedModelAdapter, type RecordedResponse } from "../src/replay.ts";
@@ -59,7 +59,7 @@ function fixture(t: TestContext, main: ModelAdapter, judge: Judge, settingsOverr
 			return { ok: true, modelContent: "STUB_EXECUTED_NO_COMMAND_WAS_RUN", summary: "stub completed", details: { stub: true } };
 		},
 	};
-	const tools = defaultTools().filter((tool) => tool.name !== "command_run").map((tool): ToolDefinition => ({
+	const tools = generalTools().filter((tool) => tool.name !== "command_run").map((tool): ToolDefinition => ({
 		...tool, async execute(args, ctx) { executed.push(tool.name); return tool.execute(args, ctx); },
 	}));
 	tools.push(command);
@@ -93,7 +93,7 @@ test("authorized dangerous command reaches a harmless stub; approval reasoning a
 	assert.equal(judge.evidence[0]!.action.tool, "command_run"); assert.equal(judge.evidence[0]!.action.risk, "dangerous");
 	assert.deepEqual(judge.evidence[0]!.action.arguments, dangerous.args);
 	assert.match(toolResult(main.requests[1]!, "danger"), /STUB_EXECUTED/);
-	const mainHistory = JSON.stringify(main.requests[1]);
+	const mainHistory = JSON.stringify(main.requests[1]!.messages);
 	assert.doesNotMatch(mainHistory, /JUDGE_REASONING_MUST_NOT_REACH_MAIN|authorization|requestId/);
 	assert.ok(mainHistory.includes("MAIN_REASONING_STAYS_PRIVATE"));
 	assert.equal(result.totals.approvalRequests, 1); assert.ok(result.totals.approvalCost! > 0);
@@ -106,7 +106,7 @@ test("denied action never executes and only its short reason reaches the next ma
 	assert.equal(result.status, "completed", result.reason); assert.deepEqual(f.executed, []);
 	assert.equal(main.requests.length, 2); assert.equal(judge.requests.length, 1);
 	assert.equal(toolResult(main.requests[1]!, "danger"), `未执行：${reason}`);
-	assert.doesNotMatch(JSON.stringify(main.requests[1]), /JUDGE_REASONING_MUST_NOT_REACH_MAIN|authorization/);
+	assert.doesNotMatch(JSON.stringify(main.requests[1]!.messages), /JUDGE_REASONING_MUST_NOT_REACH_MAIN|authorization/);
 });
 
 test("ordinary real file_read completes without calling the approval model", async (t) => {
@@ -291,7 +291,7 @@ test("approval input tokens count before the next main request, even when main-o
 test("a manually approved read pauses an all-read-only batch before a later ordinary read can run", async (t) => {
 	const main = new ScriptedModelAdapter([reply([
 		{ id: "manual-read", name: "file_read", args: { path: "a.txt" } },
-		{ id: "ordinary-glob", name: "file_glob", args: { pattern: "*.txt" } },
+		{ id: "ordinary-glob", name: "query_plan", args: { steps: [{ id: "files", op: "glob", patterns: ["*.txt"] }] } },
 	]), reply()]);
 	const judge = new Judge(); const f = fixture(t, main, judge, { manualTools: ["file_read"] });
 	const result = await f.agent.run("查看文件内容并列出文本文件。");

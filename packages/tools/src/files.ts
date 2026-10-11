@@ -1,5 +1,6 @@
 import { isUtf8 } from "node:buffer";
 import { outlineLines } from "./outline.ts";
+import { buildEditFeedback } from "./edit-feedback.ts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -12,6 +13,8 @@ export interface ReadLimits {
 	maxLineChars: number;
 	/** 同一文件同一版本的同一行范围已发送过时，只返回简短说明（可用 force 强制重读） */
 	dedupe?: boolean;
+	/** With dedupe: partial overlap sends only unseen source ranges when that is shorter. Default off. */
+	dedupeRanges?: boolean;
 	/**
 	 * 行号格式：all（默认）每行都带行号；sparse 只在首行和行号为 10 的倍数的行带行号，其余行原样输出。
 	 * sparse 可减少行号的输入开销。编辑按原文匹配，不依赖行号。
@@ -162,7 +165,29 @@ export function findSymbol(lines: string[], symbol: string): { start: number; en
 	return out;
 }
 
-export const DEFAULT_READ_LIMITS: ReadLimits = { defaultLines: 120, maxLines: 400, maxLineChars: 2000, dedupe: false };
+export const DEFAULT_READ_LIMITS: ReadLimits = { defaultLines: 2000, maxLines: 2000, maxLineChars: 2000, dedupe: false };
+
+/** Shared production formatter, also usable by offline trace replay. Old history is never edited. */
+export function buildIncrementalReadText(options: {
+	label: string; header: string; rows: readonly string[]; startLine: number;
+	missing: readonly { start: number; end: number }[]; sparse?: boolean;
+}): string {
+	const prefix = `${options.label} | lines `;
+	if (!options.header.startsWith(prefix)) throw new ToolError("Invalid incremental read header");
+	const header = `${options.label} | requested lines ${options.header.slice(prefix.length)}` +
+		" | unchanged lines already shown are omitted; force=true re-sends this range";
+	const blocks = options.missing.map(range => {
+		if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < options.startLine || range.end < range.start || range.end >= options.startLine + options.rows.length) throw new ToolError("Invalid incremental read range");
+		const rows: string[] = [];
+		for (let i = range.start; i <= range.end; i++) {
+			const text = options.rows[i - options.startLine]!;
+			// Each disjoint sparse block needs its own first-line address.
+			rows.push(options.sparse && i === range.start && i !== options.startLine && i % 10 !== 0 ? `${i}\t${text}` : text);
+		}
+		return `lines ${range.start}-${range.end}\n${rows.join("\n")}`;
+	});
+	return [header, ...blocks].join("\n");
+}
 
 function isBinary(buf: Buffer): boolean {
 	return buf.includes(0);
@@ -191,8 +216,8 @@ function fail(message: string, details: Record<string, unknown> = {}): ToolResul
 	return { ok: false, modelContent: `错误：${message}`, summary: `失败：${message}`, details: { error: message, ...details } };
 }
 
-/** 原子写入：同目录临时文件 + rename，保留原权限 */
-export function atomicWrite(abs: string, data: string | Buffer, expectedHash?: string): void {
+/** 原子写入：同目录临时文件 + rename，保留原权限；expectedHash=null 要求目标仍不存在。 */
+export function atomicWrite(abs: string, data: string | Buffer, expectedHash?: string | null): void {
 	mkdirSync(dirname(abs), { recursive: true });
 	const tmp = `${abs}.mountains-${process.pid}-${randomUUID()}.tmp`;
 	let created = false;
@@ -204,7 +229,10 @@ export function atomicWrite(abs: string, data: string | Buffer, expectedHash?: s
 		if (existsSync(abs)) chmodSync(tmp, statSync(abs).mode);
 		// Recheck after checkpoint/temporary-file work, immediately before the only commit.
 		// Portable filesystems do not offer compare-and-swap rename against arbitrary external writers.
-		if (expectedHash !== undefined && (lstatSync(abs).isSymbolicLink() || sha256(readFileSync(abs)) !== expectedHash)) {
+		if (expectedHash === null && lstatSync(abs, { throwIfNoEntry: false }) !== undefined) {
+			throw new ToolError("文件在验证后、提交前已出现，拒绝覆盖，请重新读取");
+		}
+		if (expectedHash !== undefined && expectedHash !== null && (lstatSync(abs).isSymbolicLink() || sha256(readFileSync(abs)) !== expectedHash)) {
 			throw new ToolError("文件在验证后、提交前已改变，请重新读取");
 		}
 		renameSync(tmp, abs);
@@ -214,7 +242,9 @@ export function atomicWrite(abs: string, data: string | Buffer, expectedHash?: s
 }
 
 /** Only advertise recovery when the caller also registers context_expand. Archival is independent. */
-export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recovery: { contextExpand?: boolean; lean?: boolean } = {}): ToolDefinition {
+export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recovery: { contextExpand?: boolean; lean?: boolean; queryPlan?: boolean } = {}): ToolDefinition {
+	if (limits.dedupeRanges !== undefined && typeof limits.dedupeRanges !== "boolean") throw new ToolError("dedupeRanges must be boolean");
+	if (limits.dedupeRanges && limits.dedupe !== true) throw new ToolError("dedupeRanges requires dedupe=true");
 	// lean：模型看到的回执里不放哈希和审计引用（它们照旧记在 details 和归档里）
 	const hashNote = (hash: string) => (recovery.lean ? "" : ` | sha256:${hash.slice(0, 12)}`);
 	return {
@@ -222,10 +252,11 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 		logicalName: "file.read",
 		readOnly: true,
 		description:
-			`Read a UTF-8 text file in the workspace. Returns ${limits.lineNumbers === "sparse" ? "lines with a line number on the first line and every 10th line" : "numbered lines"}. Reads at most ${limits.maxLines} lines per call (default ${limits.defaultLines}); use startLine/endLine for other ranges. ` +
+			`Read a UTF-8 text file in the workspace. Returns ${limits.lineNumbers === "sparse" ? "lines with a line number on the first line and every 10th line" : "numbered lines"}. You decide how much to read: without startLine/endLine it returns ${limits.defaultLines >= limits.maxLines ? "the whole file" : `the first ${limits.defaultLines} lines`} (at most ${limits.maxLines} lines per call). Read small files whole; for a large file, locate the code first (${recovery.queryPlan ? "query_plan search" : "content_search"}), then read the part you need with startLine/endLine. ` +
 			(limits.outlineFirst ? `Called without startLine/endLine on a source file longer than ${limits.outlineFirst} lines, it returns the file's outline (definitions with line numbers) instead of its first lines; then read just the range you need. ` : "") +
 			(limits.symbols && limits.classOutlineOver ? `A class longer than ${limits.classOutlineOver} lines read by symbol returns its structure (methods with line numbers); pass full=true for the whole class. ` : "") +
 			(limits.symbols ? "To read a Python function or class, pass symbol (e.g. parse or MyClass.method) instead of a line range. Uses lexical boundaries, not a full Python parser; if unsupported, use startLine/endLine. The same size limits apply; incomplete definitions include a continuation range. " : "") +
+			(limits.dedupeRanges ? "Previously shown lines of the same file version may be omitted; force=true re-sends the requested range. " : "") +
 			(recovery.lean ? "The header shows the line range and total lines." : "The header shows total lines and the file's sha256 (pass it as expectedHash when editing)."),
 		parameters: {
 			type: "object",
@@ -243,7 +274,7 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 		async execute(args, ctx: ToolContext): Promise<ToolResult> {
 			try {
 				const { abs, rel } = ctx.workspace.resolve(str(args.path, "path"));
-				if (statSync(abs).isDirectory()) return fail(`${rel} 是目录，请用 file_glob 列出文件`);
+				if (statSync(abs).isDirectory()) return fail(`${rel} 是目录，请用 ${recovery.queryPlan ? "query_plan 的 glob 步骤" : "file_glob"} 列出文件`);
 				const buf = readFileSync(abs);
 				if (isBinary(buf)) return fail(`${rel} 是二进制文件，拒绝读取`, { path: rel, bytes: buf.length });
 				const hash = sha256(buf);
@@ -324,14 +355,25 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 					(invalidUtf8 ? " | invalid UTF-8: displayed text is lossy" : "") +
 					(fullOutputRef && !(recovery.lean && !recovery.contextExpand) ? ` | fullOutputRef=${fullOutputRef} (${recovery.contextExpand ? "context_expand can recover this exact version" : "audit only"})` : "") +
 					(archiveError ? ` | archive unavailable: ${archiveError}` : "");
-				const modelContent = [header, ...out].join("\n");
-				if (total > 0 && longLines === 0 && !invalidUtf8) ctx.files.markDelivered(rel, hash, start, end);
+				let modelContent = [header, ...out].join("\n");
+				let publishedRanges = total > 0 && longLines === 0 && !invalidUtf8 ? [{ start, end }] : [];
+				let partialDedupe = false;
+				if (limits.dedupeRanges && args.force !== true && publishedRanges.length) {
+					const missing = ctx.files.undeliveredRanges(rel, hash, start, end);
+					if (missing.length && (missing.length !== 1 || missing[0]!.start !== start || missing[0]!.end !== end)) {
+						const compact = buildIncrementalReadText({ label: rel, header, rows: out, startLine: start, missing, sparse: limits.lineNumbers === "sparse" });
+						if (Buffer.byteLength(compact) < Buffer.byteLength(modelContent)) {
+							modelContent = compact; publishedRanges = missing; partialDedupe = true;
+						}
+					}
+				}
+				if (!ctx.deferReadPublication) for (const range of publishedRanges) ctx.files.markDelivered(rel, hash, range.start, range.end);
 				return {
 					ok: true,
 					modelContent,
-					summary: `查看 ${rel} 第 ${start}-${end} 行（共 ${total} 行）`,
-					details: { path: rel, startLine: start, endLine: end, totalLines: total, hash, truncated, longLines, eol, invalidUtf8, ...(archiveError ? { archiveError } : {}), ...(symbolRange ? { symbolEndLine: symbolRange.end, symbolTruncated } : {}) },
-					reads: [{ path: rel, startLine: start, endLine: end, totalLines: total, hash }],
+					summary: partialDedupe ? `查看 ${rel} 第 ${start}-${end} 行中尚未展示的部分（共 ${total} 行）` : `查看 ${rel} 第 ${start}-${end} 行（共 ${total} 行）`,
+					details: { path: rel, ...(partialDedupe ? { requestedStartLine: start, requestedEndLine: end, partialDedupe: true } : { startLine: start, endLine: end }), totalLines: total, hash, truncated, longLines, eol, invalidUtf8, ...(archiveError ? { archiveError } : {}), ...(symbolRange ? { symbolEndLine: symbolRange.end, symbolTruncated } : {}) },
+					reads: publishedRanges.map(range => ({ path: rel, startLine: range.start, endLine: range.end, totalLines: total, hash })),
 					...(fullOutputRef ? { fullOutputRef } : {}),
 				};
 			} catch (err) {
@@ -346,7 +388,18 @@ function hashMatches(expected: string, actual: string): boolean {
 	return e.length >= 8 && actual.startsWith(e);
 }
 
-export function createEditTool(options: { batch?: boolean; lean?: boolean } = {}): ToolDefinition {
+/** 完整原始参数进入审批展示，审批等待期间不会创建文件或调用快照钩子。 */
+async function approveFileWrite(tool: string, args: Record<string, unknown>, path: string, explanation: string, ctx: ToolContext): Promise<ToolResult | null> {
+	const request = { toolCallId: ctx.toolCallId, command: `${tool} ${JSON.stringify(args, null, 2)}`, cwd: ".", risk: "workspace-write" as const, explanation };
+	if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path, cancelled: true });
+	const decision = await ctx.approve(request);
+	if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path, cancelled: true });
+	if (decision !== "allow") return fail(`写文件未获批准：${path}`, { path, approved: false });
+	return null;
+}
+
+export function createEditTool(options: { batch?: boolean; lean?: boolean; approveFileWrites?: boolean; feedback?: boolean } = {}): ToolDefinition {
+	if (options.feedback !== undefined && typeof options.feedback !== "boolean") throw new ToolError("feedback must be boolean");
 	return {
 		name: "file_edit",
 		logicalName: "file.edit",
@@ -354,14 +407,15 @@ export function createEditTool(options: { batch?: boolean; lean?: boolean } = {}
 		description:
 			"Replace exact text in a file. oldText must match exactly (including indentation); by default it must match exactly once (set expectedMatches otherwise). " +
 			"Fails if the file changed since you last read it (or if expectedHash does not match). Read the file before editing." +
-			(options.batch ? " Alternatively supply edits, a list of independent replacements in this file. Every edit is matched against the same original version, never a previous replacement. All counts and non-overlap must pass before one atomic commit. Do not mix edits with oldText/newText/expectedMatches." : ""),
+			(options.batch ? " Alternatively supply edits, a list of independent replacements in this file. Every edit is matched against the same original version, never a previous replacement. All counts and non-overlap must pass before one atomic commit. Do not mix edits with oldText/newText/expectedMatches." : "") +
+			(options.feedback ? " Returns a bounded source preview around the edits, with exact new line ranges." : ""),
 		parameters: {
 			type: "object",
 			properties: {
 				path: { type: "string" },
 				oldText: { type: "string", description: "Exact existing text to replace" },
 				newText: { type: "string", description: "Replacement text" },
-				expectedHash: { type: "string", description: "sha256 from the last file_read header (optional)" },
+				expectedHash: { type: "string", description: options.lean ? "Optional current sha256; last read is tracked automatically" : "sha256 from the last file_read header (optional)" },
 				expectedMatches: { type: "integer", minimum: 1, description: "Number of occurrences to replace, default 1" },
 				...(options.batch ? { edits: { type: "array", minItems: 1, maxItems: 100, description: "Independent replacements, all against the original file", items: {
 					type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" }, expectedMatches: { type: "integer", minimum: 1 } }, required: ["oldText", "newText"], additionalProperties: false,
@@ -413,22 +467,39 @@ export function createEditTool(options: { batch?: boolean; lean?: boolean } = {}
 				}
 				spans.sort((a, b) => a.start - b.start || a.end - b.end);
 				for (let i = 1; i < spans.length; i++) if (spans[i]!.start < spans[i - 1]!.end) return fail("替换范围重叠；所有 edits 必须匹配原文件中的独立位置", { path: rel, editIndex: spans[i]!.edit });
-				let text = original;
-				for (const span of [...spans].reverse()) text = text.slice(0, span.start) + span.text + text.slice(span.end);
+				const pieces: string[] = [];
+				let cursor = 0;
+				for (const span of spans) {
+					pieces.push(original.slice(cursor, span.start), span.text);
+					cursor = span.end;
+				}
+				pieces.push(original.slice(cursor));
+				const text = pieces.join("");
 				const lineAt = original.slice(0, spans[0]!.start).split("\n").length;
-				await ctx.beforeWrite?.(abs);
-				if (ctx.signal.aborted) return fail("编辑已取消，文件未修改", { path: rel });
-				if (ctx.workspace.resolve(rel).abs !== abs) return fail("文件路径在验证后已改变，请重新读取", { path: rel });
-				atomicWrite(abs, text, before);
-				const after = sha256(text);
-				ctx.files.record(rel, after);
 				const added = edits.reduce((n, e) => n + e.newText.split("\n").length * e.expectedMatches, 0);
 				const removed = edits.reduce((n, e) => n + e.oldText.split("\n").length * e.expectedMatches, 0);
+				if (options.approveFileWrites) {
+					const rejected = await approveFileWrite("file_edit", args, rel, `修改 ${rel}（${spans.length} 处替换，第 ${lineAt} 行附近，-${removed} +${added} 行）`, ctx);
+					if (rejected) return rejected;
+				}
+				await ctx.beforeWrite?.(abs);
+				if (ctx.signal.aborted) return fail("编辑已取消，文件未修改", { path: rel, ...(options.approveFileWrites ? { cancelled: true } : {}) });
+				if (ctx.workspace.resolve(rel).abs !== abs) return fail("文件路径在验证后已改变，请重新读取", { path: rel });
+				const after = sha256(text);
+				const receipt = `edited ${rel}: ${spans.length} replacement(s) at line ${lineAt}` + (options.lean ? "" : `; new sha256:${after.slice(0, 12)}`);
+				// Prepare bounded output before committing, so a formatting failure never
+				// reports an already-applied edit as failed. Publish only after atomicWrite.
+				const feedback = options.feedback ? buildEditFeedback({ path: rel, original, updated: text, spans, receipt }) : undefined;
+				ctx.assertExecutionAllowed?.();
+				atomicWrite(abs, text, before);
+				ctx.files.record(rel, after);
+				if (feedback && !ctx.deferReadPublication) for (const read of feedback.reads) ctx.files.markDelivered(read.path, read.hash, read.startLine, read.endLine);
 				return {
 					ok: true,
-					modelContent: `edited ${rel}: ${spans.length} replacement(s) at line ${lineAt}` + (options.lean ? "" : `; new sha256:${after.slice(0, 12)}`),
+					modelContent: feedback?.modelContent ?? receipt,
 					summary: `修改 ${rel}（第 ${lineAt} 行附近，-${removed} +${added} 行）`,
-					details: { path: rel, line: lineAt, replacements: spans.length, beforeHash: before, afterHash: after, ...(batch ? { edits } : { oldText: edits[0]!.oldText, newText: edits[0]!.newText }) },
+					details: { path: rel, line: lineAt, replacements: spans.length, beforeHash: before, afterHash: after, ...(batch ? { edits } : { oldText: edits[0]!.oldText, newText: edits[0]!.newText }), ...(feedback ? { feedback: feedback.details } : {}) },
+					...(feedback ? { reads: feedback.reads } : {}),
 					writes: [{ path: rel, beforeHash: before, afterHash: after }],
 				};
 			} catch (err) {
@@ -438,7 +509,7 @@ export function createEditTool(options: { batch?: boolean; lean?: boolean } = {}
 	};
 }
 
-export function createWriteTool(options: { lean?: boolean } = {}): ToolDefinition {
+export function createWriteTool(options: { lean?: boolean; approveFileWrites?: boolean } = {}): ToolDefinition {
 	return {
 		name: "file_write",
 		logicalName: "file.write",
@@ -462,20 +533,33 @@ export function createWriteTool(options: { lean?: boolean } = {}): ToolDefinitio
 				const content = str(args.content, "content");
 				const createOnly = args.createOnly !== false;
 				let before: string | null = null;
+				let beforeLines = 0;
 				if (existsSync(abs)) {
 					if (statSync(abs).isDirectory()) return fail(`${rel} 是目录`);
-					before = sha256(readFileSync(abs));
+					const buf = readFileSync(abs);
+					before = sha256(buf);
 					if (createOnly) return fail(`${rel} 已存在；覆盖需设置 createOnly=false 并提供 expectedHash`, { path: rel, currentHash: before });
 					const expected = typeof args.expectedHash === "string" ? args.expectedHash : undefined;
 					if (!expected || !hashMatches(expected, before)) {
 						return fail(`覆盖 ${rel} 需要与当前内容一致的 expectedHash（当前 sha256:${before.slice(0, 12)}）`, { path: rel, currentHash: before });
 					}
+					if (options.approveFileWrites) beforeLines = splitLines(buf.toString("utf8")).lines.length;
+				}
+				const lines = splitLines(content).lines.length;
+				if (options.approveFileWrites) {
+					const explanation = before ? `覆盖 ${rel}（原 ${beforeLines} 行，新 ${lines} 行）` : `新建 ${rel}（${lines} 行）`;
+					const rejected = await approveFileWrite("file_write", args, rel, explanation, ctx);
+					if (rejected) return rejected;
 				}
 				await ctx.beforeWrite?.(abs);
-				atomicWrite(abs, content);
+				if (options.approveFileWrites) {
+					if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path: rel, cancelled: true });
+					if (ctx.workspace.resolve(rel, { forWrite: true }).abs !== abs) return fail("文件路径在验证后已改变，请重新读取", { path: rel });
+				}
+				ctx.assertExecutionAllowed?.();
+				atomicWrite(abs, content, options.approveFileWrites ? before : undefined);
 				const after = sha256(content);
 				ctx.files.record(rel, after);
-				const lines = splitLines(content).lines.length;
 				return {
 					ok: true,
 					modelContent: `${before ? "overwrote" : "created"} ${rel} (${lines} lines` + (options.lean ? ")" : `, sha256:${after.slice(0, 12)})`),

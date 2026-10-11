@@ -1,8 +1,7 @@
 /**
  * 供应商与模型能力表（Mountains 自己维护，不使用 Pi 的模型目录数值）。
- * 当前快照的配置与限制见 docs/models.md。
  */
-export type ProviderId = "deepseek" | "zhipu" | "moonshot";
+export type ProviderId = "deepseek" | "zhipu" | "moonshot" | "openai" | "gemini" | "qwen" | "siliconflow" | "openrouter";
 export type Currency = "USD" | "CNY";
 
 export interface ProviderInfo {
@@ -20,6 +19,11 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderInfo>> = {
 	deepseek: { id: "deepseek", displayName: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", currency: "USD" },
 	zhipu: { id: "zhipu", displayName: "智谱 BigModel", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKeyEnv: "ZHIPU_API_KEY", currency: "CNY" },
 	moonshot: { id: "moonshot", displayName: "Moonshot（中国大陆）", baseUrl: "https://api.moonshot.cn/v1", apiKeyEnv: "MOONSHOT_API_KEY", currency: "CNY" },
+	openai: { id: "openai", displayName: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKeyEnv: "OPENAI_API_KEY", currency: "USD" },
+	gemini: { id: "gemini", displayName: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", apiKeyEnv: "GEMINI_API_KEY", currency: "USD" },
+	qwen: { id: "qwen", displayName: "阿里云百炼（北京）", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", apiKeyEnv: "QWEN_API_KEY", currency: "CNY" },
+	siliconflow: { id: "siliconflow", displayName: "硅基流动（中国）", baseUrl: "https://api.siliconflow.cn/v1", apiKeyEnv: "SILICONFLOW_API_KEY", currency: "CNY" },
+	openrouter: { id: "openrouter", displayName: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", currency: "USD" },
 };
 
 export type Effort = "low" | "high" | "max";
@@ -29,8 +33,9 @@ export type Effort = "low" | "high" | "max";
  * - deepseek：thinking {type} + reasoning_effort
  * - zai：thinking {type:"enabled", clear_thinking:false}（保留式思考），可选 reasoning_effort
  * - always-on：模型始终思考，不发任何思考参数（传 disabled 会报错）
+ * - none：首批通用工具模型仅使用非思考模式，不发送供应商专属思考字段
  */
-export type ThinkingFormat = "deepseek" | "zai" | "always-on";
+export type ThinkingFormat = "deepseek" | "zai" | "always-on" | "none";
 
 export interface ModelCapabilities {
 	provider: ProviderId;
@@ -45,7 +50,13 @@ export interface ModelCapabilities {
 	/** 不发 reasoning_effort 时服务端的默认强度；不支持时为 null */
 	defaultEffort: Effort | null;
 	/** 带工具的多轮对话必须回传 reasoning_content */
-	requiresReasoningPassback: true;
+	requiresReasoningPassback: boolean;
+	/** 已核实的固定请求参数；用户和模型不能修改。 */
+	requestExtras?: Readonly<Record<string, unknown>>;
+	/** 输出上限字段，默认沿用现有三家的 max_tokens。 */
+	maxTokensField?: "max_tokens" | "max_completion_tokens";
+	/** 服务端可返回的精确模型版本；仅用于匹配这个请求，不跨供应商匹配。 */
+	responseModelAliases?: readonly string[];
 	/** 与 OpenCode 1.18.32 对该模型固定发送的采样参数保持一致（provider/transform.ts 的 temperature()） */
 	fixedTemperature?: number;
 	/** 自动前缀缓存（三家都没有显式断点）；命中字段名 */
@@ -67,6 +78,11 @@ export const DEEPSEEK_FLASH: ModelCapabilities = {
 	requiresReasoningPassback: true,
 	cache: { kind: "implicit-prefix", hitField: "prompt_cache_hit_tokens" },
 	toolNamePattern: /^[a-zA-Z0-9_-]+$/,
+};
+
+/** 官方同页列明 Pro 的上下文/输出/思考能力；Pro 不支持 Flash 的图片输入。 */
+export const DEEPSEEK_V4_PRO: ModelCapabilities = {
+	...DEEPSEEK_FLASH, id: "deepseek-v4-pro", displayName: "DeepSeek-V4-Pro-0813", inputModalities: ["text"],
 };
 
 export const GLM_53_FLASH: ModelCapabilities = {
@@ -100,10 +116,38 @@ export const KIMI_K27_CODE: ModelCapabilities = {
 	toolNamePattern: /^[a-zA-Z0-9_-]+$/,
 };
 
+/** 通用兼容接口使用非思考模型，不能回放 DeepSeek reasoning_content。 */
+function nonReasoningModel(provider: ProviderId, id: string, displayName: string, contextWindow: number, maxOutputTokens: number, extra: Partial<ModelCapabilities> = {}): ModelCapabilities {
+	return {
+		provider, id, displayName, contextWindow, maxOutputTokens,
+		inputModalities: ["text"], thinkingFormat: "none", effortLevels: [], defaultEffort: null,
+		requiresReasoningPassback: false,
+		cache: { kind: "implicit-prefix", hitField: "prompt_tokens_details.cached_tokens" },
+		toolNamePattern: /^[a-zA-Z0-9_-]+$/,
+		...extra,
+	};
+}
+
+export const OPENAI_GPT41_MINI = nonReasoningModel("openai", "gpt-4.1-mini", "GPT-4.1 mini", 1_047_576, 32_768, {
+	maxTokensField: "max_completion_tokens", responseModelAliases: ["gpt-4.1-mini-2025-04-14"],
+});
+export const QWEN_PLUS = nonReasoningModel("qwen", "qwen-plus", "Qwen Plus（非思考）", 1_000_000, 32_768, {
+	requestExtras: { enable_thinking: false }, responseModelAliases: ["qwen-plus-2025-12-01"],
+});
+export const SILICONFLOW_QWEN25_7B = nonReasoningModel("siliconflow", "Qwen/Qwen2.5-7B-Instruct", "Qwen 2.5 7B（硅基流动）", 32_768, 4_096);
+export const OPENROUTER_GPT41_MINI = nonReasoningModel("openrouter", "openai/gpt-4.1-mini", "GPT-4.1 mini（OpenRouter）", 1_047_576, 32_768, {
+	responseModelAliases: ["openai/gpt-4.1-mini-2025-04-14"],
+});
+
 export const CAPABILITIES: Readonly<Record<string, ModelCapabilities>> = {
 	"deepseek-flash": DEEPSEEK_FLASH,
+	"deepseek-v4-pro": DEEPSEEK_V4_PRO,
 	"glm-5.3-flash": GLM_53_FLASH,
 	"kimi-k2.7-code": KIMI_K27_CODE,
+	"gpt-4.1-mini": OPENAI_GPT41_MINI,
+	"qwen-plus": QWEN_PLUS,
+	"Qwen/Qwen2.5-7B-Instruct": SILICONFLOW_QWEN25_7B,
+	"openai/gpt-4.1-mini": OPENROUTER_GPT41_MINI,
 };
 
 /** 旧名路由到 V4.1-Flash（DeepSeek 价格页脚注 1） */
@@ -118,6 +162,12 @@ export function canonicalModel(model: string): string {
 
 export function capabilitiesFor(model: string): ModelCapabilities | undefined {
 	return CAPABILITIES[canonicalModel(model)];
+}
+
+/** 精确身份核对。不能用前缀匹配，因为同系列的其它版本可能采用不同价格。 */
+export function responseModelMatches(requested: string, response: string): boolean {
+	if (canonicalModel(requested) === canonicalModel(response)) return true;
+	return capabilitiesFor(requested)?.responseModelAliases?.includes(response) ?? false;
 }
 
 /** 由模型 ID 推断供应商；未知模型按前缀猜测，猜不出返回 undefined */

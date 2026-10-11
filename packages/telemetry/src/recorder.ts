@@ -7,8 +7,9 @@ import { knownSecrets, redactValue } from "./redact.ts";
  * 落盘前全部脱敏。离线回放使用其中的 model.response 记录（离线回放不能作为成功率或缓存的证据）。
  */
 export type RecordKind =
-	| "context.shadow"
-	| "memory.validation"
+	| "environment"
+	| "context.revision"
+	| "context.compaction-request"
 	| "approval.decision"
 	| "approval.request"
 	| "approval.usage"

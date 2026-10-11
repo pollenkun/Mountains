@@ -1,96 +1,131 @@
-# Mountains
+# Mountains Preview 1
 
-[简体中文](README.md) | [English](README.en.md) | [한국어](README.ko.md) | [日本語](README.ja.md)
+中文 | [English](README.en.md)
 
-Mountains 是一个能按任务读写代码、执行命令的助手（编码 Agent）。它还是早期项目，面向 DeepSeek、GLM 和 Kimi 等支持缓存计价的模型。重点是降低费用、及时完成任务，让用户能管住它的操作。
+Mountains 是一个编码 Agent：一个内核，加一个单命令 CLI。给它一个任务和一个目录，它读代码、改代码、跑命令，做完就退出。
 
-目前可用的是每次处理一个任务的命令行工具（CLI），以及负责执行任务的 TypeScript 引擎。终端交互界面（TUI）和桌面端还在计划中。这个仓库没有正式比较成绩，也没有已证明的省钱或提速数字。
+Preview 1 是一次技术实验，不是日常工具：没有交互界面，没有多轮对话，只在 macOS 上测过。我们公开它，是为了展示下面这套上下文管理和工具设计在真实题目上的表现。桌面版会在 Preview 2 推出。
 
-## 已经做好的功能
+## 测试结果
 
-- 尽量保持提示和工具列表的前缀不变，方便服务商命中缓存。
-- 可以按价格和上下文压力移出旧工具输出。需要时再取回保存的原文。
-- 配置的上下文窗口快满时，可以把旧交互组换成程序生成的执行记录。这个功能需要主动开启。
-- 能读文件、搜索、编辑、写入和执行命令。操作要经过审批检查，编辑前也会检查文件是否被其他人改过。
-- 支持预设审批规则，也支持另一个模型审核操作。
-- 支持单次任务上限和累计花费记录。可以在发请求前预留费用，把主模型和审批模型一起算进去。
-- 记录供应商返回的输入、缓存、输出和思考用量。再按仓库内带版本号的费率估算费用。估算不能代替供应商账单。
-- 保存本地运行记录和独立的 Git 检查点。还可以按当前文件校验项目记忆。
+同一个模型（DeepSeek V4.1 Flash，思考强度 high），同样 12 道真实仓库的修 bug 题，每题跑 2 次，共 24 次。
 
-这些可选功能大多默认关闭。默认审批规则会允许普通写入和联网命令。第一次使用建议采用下面的只读配置，再读[审批说明](docs/approvals.md)。
+```mermaid
+xychart-beta
+    title "做对的次数（共 24 次）"
+    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
+    y-axis "次数" 0 --> 24
+    bar [19, 19, 19, 20]
+```
 
-## 安装和第一次运行
+```mermaid
+xychart-beta
+    title "24 次的总花费（元）"
+    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
+    y-axis "元" 0 --> 7
+    bar [3.72, 3.98, 4.68, 6.68]
+```
 
-运行完整的 `npm run check`，需要 Node.js **22.19.0 或更新版本**、npm、Git、ripgrep（`rg`）、Python 3（`python3`）和 Bash。它们要能在命令行里找到。不用 Python 代码查询的 CLI 任务，可以不装 Python。项目本身的测试可能还需要其他工具。这次整理没有实测 Windows 原生安装和运行。
+```mermaid
+xychart-beta
+    title "24 次的总用时（分钟）"
+    x-axis ["Mountains", "OpenCode", "Pi", "DeepSeek Harness"]
+    y-axis "分钟" 0 --> 120
+    bar [50.4, 65.1, 72.0, 115.3]
+```
 
-在仓库根目录执行：
+| 系统 | 版本 | 做对 | 花费（元） | 用时（分钟） |
+|---|---|---|---|---|
+| **Mountains** | Preview 1 | 19/24 | **3.72** | **50.4** |
+| [OpenCode](https://github.com/sst/opencode) | 1.18.32 | 19/24 | 3.98 | 65.1 |
+| [Pi](https://github.com/badlogic/pi-mono) | 0.87.1 | 19/24 | 4.68 | 72.0 |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 0.2.0 | **20/24** | 6.68 | 115.3 |
 
-```sh
-npm ci
+简单说：做对的数量和其他三个差不多，花费和用时最少。
+
+### 题目
+
+每题的「做对」是 2 次里做对几次。
+
+| 题目 | 语言 | 难度 | 问题 | Mountains | OpenCode | Pi | DeepSeek Harness |
+|---|---|---|---|---|---|---|---|
+| [pallets/flask#5014](https://github.com/pallets/flask/pull/5014) | Python | 普通 | Blueprint 名字为空时应报错 | 2 | 2 | 2 | 2 |
+| [psf/requests#6028](https://github.com/psf/requests/pull/6028) | Python | 普通 | Python 3.8.12 下代理认证返回 407 | 2 | 2 | 2 | 2 |
+| [astropy/astropy#14995](https://github.com/astropy/astropy/pull/14995) | Python | 普通 | NDDataRef 一边没有 mask 时，mask 传播出错 | 2 | 2 | 2 | 2 |
+| [pydata/xarray#7393](https://github.com/pydata/xarray/pull/7393) | Python | 普通 | stack 把 int32 坐标变成 int64 | 2 | 2 | 2 | 2 |
+| [immutable-js/immutable-js#2005](https://github.com/immutable-js/immutable-js/pull/2005) | JavaScript | 困难 | OrderedSet 的相等判断和 hashCode 有误 | 2 | 1 | 1 | 2 |
+| [thlorenz/doctoc#328](https://github.com/thlorenz/doctoc/pull/328) | JavaScript | 普通 | 标题含 `h#` 这类文字时正则报错 | 0 | 0 | 0 | 0 |
+| [cthackers/adm-zip#559](https://github.com/cthackers/adm-zip/pull/559) | JavaScript | 普通 | macOS 上传绝对路径时 addLocalFolderPromise 失败 | 2 | 2 | 2 | 2 |
+| [rollup/rollup#6041](https://github.com/rollup/rollup/pull/6041) | JavaScript | 困难 | 4.46 的 `in` 优化弄坏了 styled-components | 0 | 0 | 0 | 0 |
+| [kepano/defuddle#243](https://github.com/kepano/defuddle/pull/243) | TypeScript | 普通 | 没有文字的空表格被保留进输出 | 2 | 2 | 2 | 2 |
+| [stleary/JSON-java#995](https://github.com/stleary/JSON-java/pull/995) | Java | 普通 | keepStrings 下 `<t>null</t>` 被解析成 null | 1 | 2 | 2 | 2 |
+| [google/gson#1093](https://github.com/google/gson/pull/1093) | Java | 普通 | 宽松模式下 `value(double)` 不接受 NaN 和 Infinity | 2 | 2 | 2 | 2 |
+| [gin-gonic/gin#1805](https://github.com/gin-gonic/gin/pull/1805) | Go | 普通 | 用 StaticFS 时一个 404 打出两行日志 | 2 | 2 | 2 | 2 |
+
+题目来自 SWE-bench Verified、SWE-bench Multilingual 和 SWE-bench-Live MultiLang。难度是我们按修复需要理解的代码范围评的。
+
+### 怎么测的
+
+- **模型：** 四个系统都用 DeepSeek V4.1 Flash，思考强度 high，单次输出上限 32,000 token。
+- **题面：** Agent 只拿到原始 issue 的文字和对应提交时的仓库。
+- **评分：** 用这次修复附带的隐藏测试，加上仓库原有的回归测试，全部通过才算做对。Agent 运行时看不到隐藏测试。
+- **环境：** 同一台 Mac，同一个沙箱和启动方式。每次运行的花费上限：普通题 2 元，困难题 4 元。
+- **花费：** 按 DeepSeek 返回的实际用量和官方闲时价格计算（缓存命中 0.02 元、未命中 1 元、输出 4 元，每百万 token）。
+- **用时：** Agent 进程从启动到退出的时间，24 次相加。
+- **对手设置：** 其他三个系统都用各自正常的无界面模式和默认能力，没有关掉任何功能。
+
+### 需要说明的
+
+- **这是作者自测。** 题目、评分程序和运行环境都是我们自己搭的。
+- **提示词是在这 12 道题上调的。** Mountains 的系统提示和工具说明，是作者看过这些题上的早期结果之后写的。这对 Mountains 有利，所以这份结果只能说明它在这些题上的表现，不能当成独立的基准。
+- **样本小。** 12 道题、每题 2 次，1 次的差别就是 4 个百分点。
+- **运行日期不同。** 其他三个系统在 2026-10-06 运行，Mountains 在 2026-10-11 运行。两天用的是同一套闲时价格。
+- **两道题四个系统都没做对**（doctoc、rollup）。
+
+## 设计
+
+### 上下文
+
+- **60% 起：无损折叠。** 由程序判断哪些旧的工具结果模型不会再需要：被后来的读取或编辑覆盖的、后来同样调用又成功一次的、失败后重试成功的、属于两次用户请求之前已经结束的。这些结果换成一行英文说明，原文存档，需要时可以取回。一次折一批，避免频繁打断缓存。
+- **90% 起：模型写摘要。** 如果无损折叠不够，就让模型把之前的工作总结一下，替换掉旧的工具交互。这次请求复用已缓存的前缀。摘要失败时，由程序写一份事实记录代替。
+- **永远不折叠：** 用户的消息、每轮的最终回答、模型还没看到的结果。
+- **没有预算。** 不按 token 数给模型设上限。
+
+### 工具
+
+六个工具：`query_plan`（一次调用里批量搜索、列文件、读文件）、`file_read`、`file_edit`、`file_write`、`command_run`、`context_expand`（取回被折叠的原文）。另外有 `session_search`（搜索本次会话的历史）和 `task_note`（模型记下自己的工作状态）。
+
+## 使用
+
+需要 Node.js 22.19 或更高版本，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。
+
+```bash
+npm install
+```
+
+```bash
+export DEEPSEEK_API_KEY=你的密钥
+export MOUNTAINS_BUDGET=10
+```
+
+`MOUNTAINS_BUDGET` 是所有运行累计花费的上限（元）。每次运行的上限写在配置文件里，例如 `config.json`：
+
+```json
+{ "billingCurrency": "CNY", "limits": { "maxCost": 2 } }
+```
+
+```bash
+npm run mountains -- run --task "修复 add 返回错误结果的问题" --workspace ./my-project --config config.json
+```
+
+Mountains 会直接修改 `--workspace` 里的文件，请在有版本管理或可以丢弃的目录里运行。
+
+检查代码：
+
+```bash
 npm run check
-npm run mountains
 ```
 
-最后一条会显示用法，并以退出码 `2` 结束。这是 CLI 现有行为。它支持 `run` 和 `replay`，没有单独的 `--help` 命令。
+## 许可证
 
-通过 shell 或凭据管理器设置 `DEEPSEEK_API_KEY`。再把 `MOUNTAINS_BUDGET` 设为正数，表示累计预算上限，单位是美元。配置文件只写环境变量名，不写密钥。
-
-先用下面的临时示例工作区试跑。这条命令会调用在线模型，可能产生费用。模型会收到任务文字，以及工具选出的工作区内容。
-
-```sh
-npm run mountains -- run \
-  --workspace ./examples/sample-workspace \
-  --config ./examples/read-only.json \
-  --task "Read the README and explain what this workspace contains. Do not change files."
-```
-
-示例规则会拒绝写入和联网命令。但命令分类只是启发式判断，子进程没有系统沙箱。处理不可信项目时，要放进隔离环境。
-
-默认结果目录是 `~/.mountains/runs/`。里面保存总结、配置、事件、模型对话和费用记录。这些文件可能包含代码和任务文字，分享前要检查。
-
-详细说明：[安装](docs/installation.md)、[配置](docs/configuration.md)、[模型接入](docs/models.md)、[审批](docs/approvals.md)、[预算和费用](docs/budgets-and-costs.md)、[架构](docs/architecture.md)。用户文档以英文为主。
-
-## 测试方法与结果
-
-正式评估计划从 SWE-bench Verified、Multilingual 和 Live 中选取真实修复题。开跑前要固定题目、版本、隐藏检查、排除规则和分析方法。使用这些题集，不表示这是官方 SWE-bench 排名，也不表示获得题集作者背书。
-
-计划比较 Mountains、OpenCode、Pi 和 DeepSeek Harness。
-
-每组比较会固定模型服务、修复前的工作区、输出额度，以及主任务和子任务合用的预算（根任务预算）。各 Agent 保留自己的工具、提示、检索、压缩和调度方式。版本、思考参数、非默认配置、平台、硬件和执行方式都要公开。原生接口与兼容接口分开报告。Windows 原生与 WSL、不同上下文窗口条件也分开报告。
-
-先看是否做对。每做对一题的费用，要计入失败、重试、上下文整理、子 Agent 和恢复调用。端到端时间包括启动、等待模型、执行工具、重试和上下文整理。安装和外部判分另算。重复运行不能只挑最好的一次。统计不确定范围时，同一题的重复尝试要放在一组。
-
-| 评估 | 题目来源 | 做对情况 | 每做对一题费用 | 端到端时间 | 状态 |
-| --- | --- | --- | --- | --- | --- |
-| 正式比较 | 从 Verified、Multilingual、Live 选题 | 待填 | 待填 | 待填 | 尚未运行 |
-| 审批、安装和长任务使用 | 开跑前固定场景 | 待填 | 待填 | 待填 | 尚未运行 |
-
-**作者自测，未经第三方复核。** 新方法下的正式比较还没跑。开发检查不能证明新题、其他供应商或各操作系统上有同样表现。这个代码快照没有附带正式评估用的任务运行器和结果文件。
-
-模型别名、缓存行为、服务端负载和用量报告会变化。所以在线复跑未必得到同样的补丁、词元（Token）数量和耗时。GLM、Kimi 的接入代码已经存在，但这次开源整理没有验证真实账号调用，也没有建立它们的精确输入计数校准。[评估说明](docs/evaluation.md)列出了报告要求和限制。
-
-## 仓库目录
-
-```text
-packages/       引擎、上下文、工具、模型接入、协议、费用记录和检查点
-apps/cli/       单次任务命令行工具
-apps/tui/       计划中的终端交互界面；目前只有说明文档
-apps/desktop/   计划中的桌面端；目前只有说明文档
-docs/           用户文档
-examples/       小型配置示例和可随时丢弃的示例工作区
-```
-
-## 后续要做的事
-
-- 实现终端交互界面，让用户能审批和补充需求。
-- 实现共用引擎的桌面端。
-- 完成并公开正式评估方法、可以公开且支持复现的材料，以及说明适用范围的结果。
-- 逐个平台验证安装和模型接入。
-
-这些是计划，没有承诺交付日期。
-
-## 贡献和许可证
-
-贡献前请读[贡献指南](CONTRIBUTING.md)、[安全说明](SECURITY.md)和[行为准则](CODE_OF_CONDUCT.md)。
-
-版权所有：Mountains contributors。项目采用 [Apache-2.0](LICENSE)，另见 [NOTICE](NOTICE)。依赖保留各自的许可证。
+[Apache License 2.0](LICENSE)

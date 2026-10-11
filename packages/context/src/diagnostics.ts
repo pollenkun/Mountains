@@ -28,8 +28,7 @@ export function diffPlans(prev: ContextPlan | null, next: ContextPlan): PrefixDi
 	const reasons: string[] = [];
 	if (seg?.kind === "system") reasons.push("系统提示变化（动态内容进入前缀）");
 	else if (seg?.kind === "tools") reasons.push("工具定义内容或顺序改变");
-	else if (seg?.kind === "memory") reasons.push("记忆块变化");
-	else if (next.revision !== prev.revision) reasons.push("上下文修订（分批遮蔽）");
+	else if (next.revision !== prev.revision) reasons.push("上下文修订（折叠或压缩）");
 	else if (next.segments.length < prev.segments.length) reasons.push("历史被截短");
 	else reasons.push("历史内容被改写");
 	return {
