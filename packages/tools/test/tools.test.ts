@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, test } from "node:test";
 import {
 	type ApprovalRequest,
@@ -29,7 +29,7 @@ function setup(approve: (r: ApprovalRequest) => "allow" | "deny" = () => "allow"
 	const ctx: ToolContext = {
 		workspace: new Workspace(root),
 		files: new FileStateTracker(),
-		blobs: new BlobStore(join(root, "..", `${root.split("/").pop()}-blobs`)),
+		blobs: new BlobStore(join(root, "..", `${basename(root)}-blobs`)),
 		signal: ac.signal,
 		toolCallId: "call_1",
 		approve: async (r) => {
@@ -266,7 +266,7 @@ describe("command_run", () => {
 		const saved = process.env.DEEPSEEK_API_KEY;
 		process.env.DEEPSEEK_API_KEY = "sk-should-not-leak";
 		try {
-			const r = await cmd.execute({ shellScript: 'echo "k=${DEEPSEEK_API_KEY:-none}"; exit 3' }, ctx);
+			const r = await cmd.execute({ argv: [process.execPath, "-e", "console.log('k='+(process.env.DEEPSEEK_API_KEY??'none'));process.exitCode=3;"] }, ctx);
 			assert.equal(r.ok, false);
 			assert.equal(r.details.exitCode, 3);
 			assert.match(r.modelContent, /k=none/);
@@ -277,32 +277,45 @@ describe("command_run", () => {
 		}
 	});
 
-	test("取消时终止整个进程树（含后台孙进程）", async () => {
+	test("取消时终止整个进程树（含后台孙进程）", async t => {
 		const { root, ctx, ac } = setup();
 		const pidFile = join(root, "child.pid");
-		const p = cmd.execute({ shellScript: `sleep 60 & echo $! > "${pidFile}"; wait` }, ctx);
-		for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 20));
+		const childScript = "require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000);";
+		const parentScript = "require('node:child_process').spawn(process.execPath,['-e',process.argv[1],process.argv[2]],{stdio:'ignore'});setInterval(()=>{},1000);";
+		const p = cmd.execute({ argv: [process.execPath, "-e", parentScript, childScript, pidFile] }, ctx);
+		t.after(async () => { ac.abort(); await p; });
+		for (let i = 0; i < 500 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 20));
 		const grandchild = Number(readFileSync(pidFile, "utf8").trim());
 		ac.abort();
 		const r = await p;
 		assert.equal(r.details.cancelled, true);
-		await new Promise((r2) => setTimeout(r2, 200));
-		// 容器的 1 号进程不回收孤儿，被终止的进程会停在 Z（僵尸）状态：Z 视为已终止
-		const statFile = `/proc/${grandchild}/stat`;
-		const state = existsSync(statFile) ? readFileSync(statFile, "utf8").split(" ")[2] : "gone";
-		assert.ok(state === "gone" || state === "Z", `后台孙进程应已被终止，实际状态 ${state}`);
+		const running = () => {
+			try { process.kill(grandchild, 0); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+				throw error;
+			}
+			// A Linux orphan may remain as an exited zombie until init reaps it.
+			if (process.platform === "linux") {
+				try { const stat = readFileSync(`/proc/${grandchild}/stat`, "utf8"); return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z"; }
+				catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+			}
+			return true;
+		};
+		for (let i = 0; i < 100 && running(); i++) await new Promise(resolve => setTimeout(resolve, 20));
+		assert.equal(running(), false, "the recorded background child must stop");
 	});
 
-	test("超时终止", async () => {
+	test("超时终止", { timeout: 15_000 }, async () => {
 		const { ctx } = setup();
-		const r = await cmd.execute({ argv: ["sleep", "30"], timeoutMs: 1000 }, ctx);
+		const r = await cmd.execute({ argv: [process.execPath, "-e", "setInterval(()=>{},1000);"], timeoutMs: 1000 }, ctx);
 		assert.equal(r.details.timedOut, true);
-		assert.ok(Number(r.details.durationMs) < 5000);
+		// Windows allows an 8s Job-stop handshake plus a 2s drain deadline.
+		assert.ok(Number(r.details.durationMs) < (process.platform === "win32" ? 12_000 : 5000));
 	});
 
 	test("长输出保留首尾并存完整输出", async () => {
 		const { ctx } = setup();
-		const r = await cmd.execute({ shellScript: "seq 1 1000" }, ctx);
+		const r = await cmd.execute({ argv: [process.execPath, "-e", "process.stdout.write(Array.from({length:1000},(_,i)=>String(i+1)).join('\\n')+'\\n');"] }, ctx);
 		assert.match(r.modelContent, /lines omitted/);
 		assert.match(r.modelContent, /\n1000\n?$/);
 		assert.ok(r.fullOutputRef?.startsWith("blob_"));

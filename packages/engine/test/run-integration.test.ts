@@ -114,14 +114,16 @@ test("retry attempts count toward maxRequests before a third upstream request is
 	assert.deepEqual(ledger.map((entry) => entry.isRetry), [false, true]);
 });
 
-test("a timed-out command exits, reports a failed tool, and allows the next model request", { timeout: 8000 }, async (t) => {
+test("a timed-out command exits, reports a failed tool, and allows the next model request", { timeout: process.platform === "win32" ? 25_000 : 8000 }, async (t) => {
 	const f = fixture(t);
+	// Windows compiles its native Job Object helper before launching the fixture.
+	const timeoutMs = process.platform === "win32" ? 10_000 : 1000;
 	let childPid = 0;
 	const adapter = new CheckedScript([
-		() => reply([{ id: "timeout", name: "command_run", args: { argv: [process.execPath, "-e", "console.log('FIXTURE_PID='+process.pid);setInterval(()=>{},1000)"], timeoutMs: 1000 } }]),
+		() => reply([{ id: "timeout", name: "command_run", args: { argv: [process.execPath, "-e", "console.log('FIXTURE_PID='+process.pid);setInterval(()=>{},1000)"], timeoutMs } }]),
 		(request) => {
 			const content = output(request, "timeout").content;
-			assert.match(content, /timed out after 1000ms/);
+			assert.ok(content.includes(`timed out after ${timeoutMs}ms`), content);
 			childPid = Number(/FIXTURE_PID=(\d+)/.exec(content)?.[1]);
 			assert.ok(childPid > 0);
 			assert.throws(() => process.kill(childPid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH");

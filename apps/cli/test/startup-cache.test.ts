@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { compileCacheParent } from "../src/paths.ts";
+import { isolatedEnv } from "./env.ts";
 
 const helper = new URL("../src/startup-cache.ts", import.meta.url).href;
 function fixture(t: TestContext): string {
@@ -19,9 +21,9 @@ function load(home: string, options: { env?: NodeJS.ProcessEnv; flags?: string[]
 		enableMountainsCompileCache();
 		const { usable } = await import(${JSON.stringify(pathToFileURL(join(home, "loaded.mjs")).href)});
 		process.stdout.write(JSON.stringify({ usable, directory: getCompileCacheDir() ?? null }) + '\\n');`;
-	const child = spawnSync(process.execPath, [...(options.flags ?? []), ...(options.preload ? ["--import", options.preload] : []), "--input-type=module", "-e", code], {
+	const child = spawnSync(process.execPath, [...(options.flags ?? []), ...(options.preload ? ["--import", pathToFileURL(options.preload).href] : []), "--input-type=module", "-e", code], {
 		encoding: "utf8", timeout: 15_000,
-		env: { PATH: process.env.PATH, HOME: home, ...options.env },
+		env: { ...isolatedEnv(home), ...options.env },
 	});
 	assert.equal(child.error, undefined);
 	assert.equal(child.status, 0, child.stderr);
@@ -30,7 +32,7 @@ function load(home: string, options: { env?: NodeJS.ProcessEnv; flags?: string[]
 }
 
 test("compile cache is isolated under HOME and persists reusable Node entries", t => {
-	const home = fixture(t), cache = join(home, ".cache", "mountains", "node-compile-cache");
+	const home = fixture(t), parent = compileCacheParent(isolatedEnv(home), home), cache = join(parent, "mountains", "node-compile-cache");
 	const first = load(home);
 	assert.equal(first.usable, true);
 	assert.ok(first.directory);
@@ -38,7 +40,7 @@ test("compile cache is isolated under HOME and persists reusable Node entries", 
 	assert.ok(inside !== ".." && !inside.startsWith(`..${sep}`), "Node's effective directory stays within the selected cache root");
 	assert.ok(readdirSync(first.directory).length > 0, "Node must persist cache entries when the child exits");
 	if (process.platform !== "win32") {
-		for (const directory of [join(home, ".cache", "mountains"), cache]) assert.equal(lstatSync(directory).mode & 0o777, 0o700);
+		for (const directory of [join(parent, "mountains"), cache]) assert.equal(lstatSync(directory).mode & 0o777, 0o700);
 	}
 	assert.deepEqual(load(home), first);
 });
@@ -46,11 +48,12 @@ test("compile cache is isolated under HOME and persists reusable Node entries", 
 test("explicit cache disable leaves HOME untouched and normal modules usable", t => {
 	const home = fixture(t);
 	assert.deepEqual(load(home, { env: { NODE_DISABLE_COMPILE_CACHE: "1" } }), { usable: true, directory: null });
-	assert.equal(existsSync(join(home, ".cache")), false);
+	assert.equal(existsSync(compileCacheParent(isolatedEnv(home), home)), false);
 });
 
 test("cache directory creation failure does not block normal module loading", t => {
-	const home = fixture(t), blocked = join(home, ".cache");
+	const home = fixture(t), blocked = compileCacheParent(isolatedEnv(home), home);
+	mkdirSync(join(blocked, ".."), { recursive: true });
 	writeFileSync(blocked, "existing ordinary file\n");
 	assert.deepEqual(load(home), { usable: true, directory: null });
 	assert.equal(readFileSync(blocked, "utf8"), "existing ordinary file\n");
@@ -60,7 +63,7 @@ test("read-only home enforced by Node permissions falls back without a cache", t
 	const home = fixture(t), writable = join(home, "allowed-write");
 	mkdirSync(writable);
 	assert.deepEqual(load(home, { flags: ["--permission", "--allow-fs-read=*", `--allow-fs-write=${writable}`] }), { usable: true, directory: null });
-	assert.equal(existsSync(join(home, ".cache")), false);
+	assert.equal(existsSync(compileCacheParent(isolatedEnv(home), home)), false);
 });
 
 test("native cache failure status and exceptions both leave module loading usable", t => {
@@ -74,11 +77,10 @@ test("native cache failure status and exceptions both leave module loading usabl
 });
 
 test("a linked Mountains cache subtree is not traversed or changed", t => {
-	if (process.platform === "win32") return t.skip("creating directory symlinks requires Windows privileges");
-	const home = fixture(t), outside = join(home, "outside");
-	mkdirSync(join(home, ".cache")); mkdirSync(outside);
+	const home = fixture(t), outside = join(home, "outside"), parent = compileCacheParent(isolatedEnv(home), home);
+	mkdirSync(parent, { recursive: true }); mkdirSync(outside);
 	writeFileSync(join(outside, "sentinel.txt"), "unchanged\n");
-	symlinkSync(outside, join(home, ".cache", "mountains"), "dir");
+	symlinkSync(outside, join(parent, "mountains"), process.platform === "win32" ? "junction" : "dir");
 	assert.deepEqual(load(home), { usable: true, directory: null });
 	assert.deepEqual(readdirSync(outside), ["sentinel.txt"]);
 	assert.equal(readFileSync(join(outside, "sentinel.txt"), "utf8"), "unchanged\n");

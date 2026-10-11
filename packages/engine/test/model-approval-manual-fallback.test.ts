@@ -89,7 +89,7 @@ for (const failure of ["invalid-json", "known-http-error"] as const) {
 }
 
 test("the real command tool asks the human even if its static policy would allow it", async t => {
-	const f = fixture(t, { calls: [{ id: "echo", name: "command_run", argumentsJson: JSON.stringify({ argv: ["echo", "offline approved"] }) }],
+	const f = fixture(t, { calls: [{ id: "echo", name: "command_run", argumentsJson: JSON.stringify({ argv: [process.execPath, "-e", "console.log('offline approved')"] }) }],
 		extra: { approval: { rules: [{ id: "allow-all", decision: "allow" }], fallback: "deny" } } });
 	const result = await f.agent.run("Run echo offline approved.");
 	assert.equal(result.status, "completed", result.reason);

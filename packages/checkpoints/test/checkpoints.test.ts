@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -63,6 +63,69 @@ describe("影子 Git 检查点", () => {
 		assert.match(treeEntry(plain.tree), /^100644 blob /);
 		assert.deepEqual(ck.changedPaths(executable.tree, plain.tree), [{ status: "M", path: "run.sh" }]);
 		assert.equal(treeEntry(executable.tree).split(/\s+/)[2], treeEntry(plain.tree).split(/\s+/)[2], "内容不变，只记录权限变化");
+		ck.restore(executable.tree, ["run.sh"]);
+		assert.equal(statSync(script).mode & 0o777, 0o755, "恢复已有文件的可执行位");
+		ck.restore(plain.tree, ["run.sh"]);
+		assert.equal(statSync(script).mode & 0o777, 0o644, "恢复普通文件时清除可执行位");
+		rmSync(script);
+		ck.restore(executable.tree, ["run.sh"]);
+		assert.equal(statSync(script).mode & 0o111, 0o111 & ~process.umask(), "重新创建文件时保留可执行位");
+		assert.equal(ck.snapshot().tree, executable.tree);
+	});
+
+	test("跨平台路径分隔符、空格和 Unicode 文件名可往返恢复", (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-paths-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace");
+		mkdirSync(join(ws, "中文 目录"), { recursive: true });
+		const nativePath = join("中文 目录", "文件 [一].txt");
+		const gitPath = "中文 目录/文件 [一].txt";
+		writeFileSync(join(ws, nativePath), "original\r\n");
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		assert.deepEqual(ck.listFiles([nativePath, `./${gitPath}`]), [gitPath]);
+		const before = ck.snapshot([nativePath]);
+		assert.equal(before.files, 1, "原生路径和 Git 路径不能重复纳入同一文件");
+		writeFileSync(join(ws, nativePath), "changed\n");
+		const after = ck.snapshot();
+		assert.deepEqual(ck.changedPaths(before.tree, after.tree), [{ status: "M", path: gitPath }]);
+		assert.deepEqual(ck.restore(before.tree, [nativePath]).restored, [nativePath]);
+		assert.equal(readFileSync(join(ws, nativePath), "utf8"), "original\r\n");
+	});
+
+	test("POSIX 特殊文件名不会被换行、引号或反斜线拆分", { skip: process.platform === "win32" }, (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-special-paths-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace");
+		mkdirSync(ws);
+		const names = ["line\nbreak.txt", "tab\tname.txt", "carriage\rreturn.txt", '"quoted".txt', "back\\slash.txt", "control\x01.txt", "-leading.txt", ":(glob)name.txt"];
+		for (const name of names) writeFileSync(join(ws, name), `original ${name}\n`);
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		assert.deepEqual(ck.listFiles(), [...names].sort());
+		const before = ck.snapshot();
+		assert.equal(before.files, names.length);
+		for (const name of names) writeFileSync(join(ws, name), "changed\n");
+		const after = ck.snapshot();
+		const changed = ck.changedPaths(before.tree, after.tree).map((c) => c.path);
+		assert.deepEqual(changed.sort(), [...names].sort());
+		assert.deepEqual(ck.restore(before.tree, changed).restored, changed);
+		for (const name of names) assert.equal(readFileSync(join(ws, name), "utf8"), `original ${name}\n`);
+		assert.equal(ck.snapshot().tree, before.tree);
+	});
+
+	test("ripgrep 不可用时明确报错，而不是创建空快照", (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-missing-rg-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace");
+		mkdirSync(ws);
+		writeFileSync(join(ws, "keep.txt"), "keep\n");
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		const previous = process.env.MOUNTAINS_RG;
+		t.after(() => {
+			if (previous === undefined) delete process.env.MOUNTAINS_RG;
+			else process.env.MOUNTAINS_RG = previous;
+		});
+		process.env.MOUNTAINS_RG = join(root, "missing-rg-executable");
+		assert.throws(() => ck.snapshot(), /rg 文件枚举失败：.*ENOENT/);
 	});
 
 	test("多文件修改撤回后逐字节一致；不改动用户的 index/refs/stash/config", () => {
@@ -84,7 +147,7 @@ describe("影子 Git 检查点", () => {
 		// agent 的修改：改 CRLF、改二进制、删文件、新增文件
 		writeFileSync(join(ws, "crlf.txt"), "changed\n");
 		writeFileSync(join(ws, "bin.dat"), Buffer.from([9]));
-		execFileSync("rm", [join(ws, "中文 目录", "文件 一.txt")]);
+		rmSync(join(ws, "中文 目录", "文件 一.txt"));
 		writeFileSync(join(ws, "added.txt"), "new\n");
 		const after = ck.snapshot();
 		const changed = ck.changedPaths(snap.tree, after.tree).map((c) => c.path);

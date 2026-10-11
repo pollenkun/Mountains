@@ -13,6 +13,7 @@ async function fixture(t: TestContext, original: string, approved: boolean, batc
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const rel = "many.txt", path = join(root, rel);
 	writeFileSync(path, original); chmodSync(path, 0o640);
+	const originalMode = statSync(path).mode & 0o777;
 	const controller = new AbortController();
 	const approvals: ApprovalRequest[] = [];
 	const ctx: ToolContext = {
@@ -23,7 +24,7 @@ async function fixture(t: TestContext, original: string, approved: boolean, batc
 	assert.equal(read.ok, true, read.modelContent);
 	assert.equal(ctx.files.get(rel), sha256(original), "the actual read tool must bind the edit to the original bytes");
 	const tool = createEditTool({ ...(batch ? { batch: true } : {}), ...(approved ? { approveFileWrites: true } : {}) });
-	return { root, rel, path, controller, approvals, ctx, tool };
+	return { root, rel, path, originalMode, controller, approvals, ctx, tool };
 }
 
 function successfulBytes(f: Awaited<ReturnType<typeof fixture>>, result: ToolResult, original: string, expected: string) {
@@ -34,7 +35,7 @@ function successfulBytes(f: Awaited<ReturnType<typeof fixture>>, result: ToolRes
 	assert.equal(result.details.afterHash, sha256(bytes));
 	assert.deepEqual(result.writes, [{ path: f.rel, beforeHash: sha256(original), afterHash: sha256(bytes) }]);
 	assert.equal(f.ctx.files.get(f.rel), sha256(bytes));
-	assert.equal(statSync(f.path).mode & 0o777, 0o640);
+	assert.equal(statSync(f.path).mode & 0o777, f.originalMode);
 	assert.equal(readdirSync(f.root).some(name => name.endsWith(".tmp")), false);
 }
 

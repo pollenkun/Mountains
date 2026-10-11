@@ -69,6 +69,8 @@ export interface LoadedConfig {
 	/** A custom system prompt from a file; null uses the built-in one. */
 	systemPrompt: string | null;
 	source: string | null;
+	/** An explicit ledger path takes precedence over MOUNTAINS_HOME, even if it matches the default. */
+	spendLedgerExplicit: boolean;
 }
 
 function merge<T>(base: T, over: unknown): T {
@@ -143,6 +145,7 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 		sha256: createHash("sha256").update(canonical).update("\0").update(systemPrompt ?? "").digest("hex"),
 		systemPrompt,
 		source: path,
+		spendLedgerExplicit: Object.hasOwn(fileConfig, "spendLedger") || overrides.spendLedger !== undefined,
 	};
 }
 

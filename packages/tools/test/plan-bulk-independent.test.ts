@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createPlanTool } from "../src/plan.ts";
 import type { ToolContext } from "../src/types.ts";
 import { FileStateTracker, Workspace } from "../src/workspace.ts";
+import { useNodeFixture } from "./helpers/node-fixture.ts";
 
 function fixture() {
 	const parent = mkdtempSync(join(tmpdir(), "mountains-plan-independent-"));
@@ -15,7 +16,7 @@ function fixture() {
 }
 
 for (const suffix of [" ", "\t", "\n"]) {
-	test(`literal search.path preserves trailing ${JSON.stringify(suffix)} in a filename`, async () => {
+	test(`literal search.path preserves trailing ${JSON.stringify(suffix)} in a filename`, { skip: process.platform === "win32" ? "Windows does not support trailing spaces or control characters in ordinary filenames" : false }, async () => {
 		const { parent, root, ctx } = fixture();
 		try {
 			const path = `a.txt${suffix}`;
@@ -32,16 +33,15 @@ for (const suffix of [" ", "\t", "\n"]) {
 	});
 }
 
-test("bulk search cannot bind replacement-directory contents to the observed source hash", async () => {
+test("bulk search cannot bind replacement-directory contents to the observed source hash", async t => {
 	const { parent, root, ctx } = fixture();
 	const previous = process.env.MOUNTAINS_RG;
 	try {
 		mkdirSync(join(root, "src"));
 		const file = join(root, "src", "a.txt"); writeFileSync(file, "SAFE_OLD\n");
-		const fake = join(parent, "rg-wrapper.cjs");
+		const fake = join(parent, "rg-wrapper.cjs"); useNodeFixture(t, fake);
 		const held = join(parent, "held-original");
-		writeFileSync(fake, `#!${process.execPath}
-const fs = require('node:fs'), cp = require('node:child_process'), path = require('node:path');
+		writeFileSync(fake, `const fs = require('node:fs'), cp = require('node:child_process'), path = require('node:path');
 const args = process.argv.slice(2), src = path.join(process.cwd(), 'src'), held = ${JSON.stringify(held)};
 let moved = false;
 try {

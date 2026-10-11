@@ -4,7 +4,7 @@
 
 Mountains 是一个编码 Agent：一个内核，加一个单命令 CLI。给它一个任务和一个目录，它读代码、改代码、跑命令，做完就退出。
 
-Preview 1 是一次技术实验，不是日常工具：没有交互界面，没有多轮对话，只在 macOS 上测过。我们公开它，是为了展示下面这套上下文管理和工具设计在真实题目上的表现。桌面版会在 Preview 2 推出。
+Preview 1 是一次技术实验，不是日常工具：没有交互界面，没有多轮对话。我们公开它，是为了展示下面这套上下文管理和工具设计在真实题目上的表现。桌面版会在 Preview 2 推出。
 
 ## 测试结果
 
@@ -75,9 +75,15 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 ## 使用
 
-需要 Node.js 22.19 或更高版本，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。
+需要 Node.js 22.19 或更高版本、npm、Git，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。Git 用来保存文件检查点。
 
-以下以 macOS 和 DeepSeek 为例。先下载仓库并安装依赖：
+这次补了 Linux 和 Windows 的兼容。Linux 的离线测试已通过，Windows 和 macOS 的这版修改还没在真机上测。CI 配了三个系统，每个系统都检查 Node.js 22.19 和 24。
+
+- **Linux、macOS：** 还需要 Bash。精简 Linux 镜像可能没有自带，需要另装；Linux 的进程清理要能读取 `/proc`。
+- **Windows 10/11：** 安装 Git for Windows，包含 Git Bash，并保留系统自带的 Windows PowerShell。可以从 PowerShell、cmd 或 Git Bash 启动。
+- **WSL：** 按 Linux 安装 Node、Git、rg 和 Bash，都在 WSL 里运行，不要混用 Windows 的 Node。
+
+下面以 DeepSeek 为例。Bash 命令适用于 Linux、macOS 和 Windows 的 Git Bash，PowerShell 写法在后面。先下载仓库并安装依赖：
 
 ```bash
 git clone https://github.com/pollenkun/Mountains.git
@@ -127,11 +133,46 @@ node -e "require('node:assert/strict').equal(require('./demo-workspace/add.cjs')
 
 输出 `OK` 表示这个例子通过。处理自己的项目时，把 `--workspace` 换成项目路径，把 `--task` 换成任务描述。以上命令都在 Mountains 仓库目录中执行。
 
-检查代码：
+### Windows PowerShell
+
+如果用 PowerShell，在 Mountains 仓库目录中执行下面这些命令。这里用 Node 写文件，避开 Windows PowerShell 5.1 写入 BOM 的问题：
+
+```powershell
+npm.cmd ci
+$env:DEEPSEEK_API_KEY = "你的密钥"
+$env:MOUNTAINS_BUDGET = "10"
+node -e "require('node:fs').writeFileSync('config.json', JSON.stringify({billingCurrency:'CNY',limits:{maxCost:2}}))"
+node -e "require('node:fs').mkdirSync('demo-workspace',{recursive:true});require('node:fs').writeFileSync('demo-workspace/add.cjs','exports.add = (a, b) => a - b;\n')"
+npm.cmd run mountains -- run --task "修复 add.cjs 中的 add，让它返回两个数的和" --workspace ./demo-workspace --config config.json
+```
+
+最后一条命令会调用 DeepSeek，产生模型费用，也会直接修改示例目录。
+
+命令工具的 `shellScript` 用 Bash 语法。`argv` 直接调用原生程序；`npm.cmd`、`.bat` 要通过 `cmd.exe /c` 或 Git Bash 调用。Windows PowerShell 用来管理子进程，系统策略禁用它时，命令工具不能运行。
+
+### 记录和费用
+
+运行记录、回放、归档和费用账本默认放在主目录的 `.mountains` 下，Windows 是 `%USERPROFILE%\.mountains`。设置 `MOUNTAINS_HOME` 可以换目录。配置文件或 `--spend-ledger` 指定的账本路径优先。
+
+以前的 `MOUNTAINS_HOME` 只改归档位置。这次也会改默认账本位置。如果旧的 `~/.mountains/spend.jsonl` 还在、新目录没有账本，CLI 会先停下来。把旧账本搬过去，或用 `--spend-ledger` 继续用原路径，累计费用就不会从零开始。
+
+编译缓存另外存放：Linux 用 `$XDG_CACHE_HOME`（默认 `~/.cache`），macOS 用 `~/Library/Caches`，Windows 用 `%LOCALAPPDATA%`，再加 `mountains/node-compile-cache`。缓存不可用不影响启动。
+
+### 检查
+
+查看帮助，不需要密钥，也不调用模型：
+
+```bash
+npm run mountains -- --help
+```
+
+检查代码。这些测试在本地跑，不调用付费模型：
 
 ```bash
 npm run check
 ```
+
+测试还需要 Python 3。Linux、macOS 默认用 `python3`，Windows 默认用 `python`，也可以用 `MOUNTAINS_PYTHON` 指定已有的解释器。Windows 要允许创建符号链接，才能跑相关测试。POSIX 权限、特殊文件名和 macOS 沙箱测试只在对应系统上跑。
 
 ## 许可证
 

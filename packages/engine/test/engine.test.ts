@@ -6,6 +6,8 @@ import { describe, test } from "node:test";
 import { type EngineEvent, eventErrors, isValidEvent } from "@mountains/protocol";
 import { AgentSession, BudgetGuard, DEFAULT_RETRY, replayAdapterFromRecording, retryDelayMs, ScriptedModelAdapter } from "../src/index.ts";
 
+const python = process.env.MOUNTAINS_PYTHON || (process.platform === "win32" ? "python" : "python3");
+
 const usage = (miss: number, hit: number, out: number) => ({
 	prompt_tokens: miss + hit,
 	completion_tokens: out,
@@ -56,7 +58,7 @@ function script() {
 				role: "assistant" as const,
 				content: "",
 				reasoning: "跑测试。",
-				toolCalls: [{ id: "c4", name: "command_run", argumentsJson: '{"argv":["python3","test_calc.py"]}' }],
+				toolCalls: [{ id: "c4", name: "command_run", argumentsJson: JSON.stringify({ argv: [python, "test_calc.py"] }) }],
 			},
 			finishReason: "tool_calls",
 			responseModel: "deepseek-flash",

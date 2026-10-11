@@ -243,6 +243,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 		readOnly: false,
 		description:
 			"Run a command in the workspace (not sandboxed; subject to approval). Provide either argv (preferred) or shellScript (run with bash -c). " +
+			(platform === "win32" ? "Windows argv requires a native executable; for .cmd/.bat such as npm.cmd, explicitly use cmd.exe /c or shellScript with Git for Windows Bash. " : "") +
 			`Returns exit code and combined stdout/stderr (long output keeps the first ${limits.headLines} and last ${limits.tailLines} lines). Default timeout ${limits.defaultTimeoutMs / 1000}s.`,
 		parameters: {
 			type: "object",
@@ -409,13 +410,16 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 					clearTimeout(cleanupDeadline); processes.dispose();
 					if (!completed) posixCleanupError = "进程清理超时，未确认后台进程已全部结束";
 				}
+				// An unconfirmed Windows cleanup may have forcibly closed inherited pipes too.
+				// Preserve captured bytes for audit, but never advertise them as a full output.
+				const cleanupIncomplete = !!posixCleanupError || windowsCleanup?.confirmed === false;
 				const raw = Buffer.concat(chunks, capturedBytes);
 				// Preserve bytes before deriving any display text. stdout/stderr are combined
 				// in observed data-event order, not claimed to be an OS-wide total order.
 				let ref: string | undefined;
 				let archiveError: string | undefined;
 				try {
-					ref = ctx.blobs?.put(raw, { kind: "raw", source: { tool: "command_run", toolCallId: ctx.toolCallId, commandSha256: sha256(display), commandPreview: display.slice(0, 512), cwd: rel, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, streamOrder: "observed-data-events", ...(captureMaxBytes !== undefined || posixCleanupError ? { captureComplete: !outputLimited && !posixCleanupError } : {}) } });
+					ref = ctx.blobs?.put(raw, { kind: "raw", source: { tool: "command_run", toolCallId: ctx.toolCallId, commandSha256: sha256(display), commandPreview: display.slice(0, 512), cwd: rel, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, streamOrder: "observed-data-events", ...(captureMaxBytes !== undefined || cleanupIncomplete ? { captureComplete: !outputLimited && !cleanupIncomplete } : {}) } });
 					if (!ref) archiveError = "archive storage unavailable";
 				} catch { archiveError = "archive write or verification failed"; }
 				const invalidUtf8 = !isValidUtf8(raw);
@@ -431,25 +435,26 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 						: cancelled
 							? "cancelled"
 							: `exit code ${exit.code ?? `signal ${exit.signal}`}`;
-				const recoveryHint = outputLimited || posixCleanupError
+				const recoveryHint = outputLimited || cleanupIncomplete
 					? ref ? `; partialOutputRef=${ref}; incomplete capture only` : `; partial output archive unavailable: ${archiveError}`
 					: (truncated || invalidUtf8)
 					? ref ? (recovery.lean && !recovery.contextExpand ? "" : `; fullOutputRef=${ref}; ${recovery.contextExpand ? "recover with context_expand" : "audit only"}`) : `; full output unavailable: ${archiveError}`
 					: "";
 				const decoding = invalidUtf8 ? "; invalid UTF-8: display uses replacement characters" + (ref && recovery.contextExpand ? "; archived original bytes can be recovered as base64" : "") : "";
-				const searchHint = !outputLimited && !posixCleanupError && ref && recovery.contextExpand && recovery.archiveSearch && (truncated || invalidUtf8)
+				const searchHint = !outputLimited && !cleanupIncomplete && ref && recovery.contextExpand && recovery.archiveSearch && (truncated || invalidUtf8)
 					? `; search archived lines with context_search ref=${ref} toolCallId=${JSON.stringify(ctx.toolCallId)}` : "";
 				const cleanupHint = posixCleanupError ? `; ${posixCleanupError}` : windowsCleanup && !windowsCleanup.confirmed ? `; ${windowsCleanup.error ?? "未确认后台进程已全部结束"}` : "";
-				const modelContent = `$ ${display}\n[${status}; ${durationMs}ms${truncated ? outputLimited || posixCleanupError ? `; display truncated, captured ${output.length} chars` : `; output truncated, full ${output.length} chars` : ""}${decoding}${recoveryHint}${searchHint}${cleanupHint}]\n${text}`;
+				const modelContent = `$ ${display}\n[${status}; ${durationMs}ms${truncated ? outputLimited || cleanupIncomplete ? `; display truncated, captured ${output.length} chars` : `; output truncated, full ${output.length} chars` : ""}${decoding}${recoveryHint}${searchHint}${cleanupHint}]\n${text}`;
 				return {
-					ok: !exit.spawnError && !timedOut && !cancelled && !outputLimited && !posixCleanupError && exit.code === 0 && windowsCleanup?.confirmed !== false,
+					ok: !exit.spawnError && !timedOut && !cancelled && !outputLimited && !cleanupIncomplete && exit.code === 0,
 					modelContent,
 					summary: `运行 ${display.slice(0, 60)}（${status}${cleanupHint}）`,
 					details: { command: display, cwd: rel, risk, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, durationMs, outputChars: output.length, outputBytes: raw.length, outputSha256: sha256(raw), invalidUtf8, archiveError, streamOrder: "observed-data-events", toolCallId: ctx.toolCallId, truncated,
 						...(windowsCleanup ? { processTreeCleanupConfirmed: windowsCleanup.confirmed, processTreeCleanupError: windowsCleanup.error } : {}),
-						...(posixCleanupError ? { processTreeCleanupConfirmed: false, processTreeCleanupError: posixCleanupError, captureComplete: false, ...(ref ? { partialOutputRef: ref } : {}) } : {}),
-						...(captureMaxBytes !== undefined ? { captureMaxBytes, captureComplete: !outputLimited && !posixCleanupError, outputLimited, observedOutputBytes, ...(outputLimited && ref ? { partialOutputRef: ref } : {}) } : {}) },
-					...(ref && !outputLimited && !posixCleanupError ? { fullOutputRef: ref } : {}),
+						...(posixCleanupError ? { processTreeCleanupConfirmed: false, processTreeCleanupError: posixCleanupError } : {}),
+						...(cleanupIncomplete ? { captureComplete: false, ...(ref ? { partialOutputRef: ref } : {}) } : {}),
+						...(captureMaxBytes !== undefined ? { captureMaxBytes, captureComplete: !outputLimited && !cleanupIncomplete, outputLimited, observedOutputBytes, ...(outputLimited && ref ? { partialOutputRef: ref } : {}) } : {}) },
+					...(ref && !outputLimited && !cleanupIncomplete ? { fullOutputRef: ref } : {}),
 				};
 			} catch (err) {
 				return fail(err instanceof ToolError ? err.message : String(err));

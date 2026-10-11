@@ -6,8 +6,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
 import { createCommandTool, createEditTool, createWriteTool, FileStateTracker, sha256, Workspace, type ToolContext, type ToolResult } from "../src/index.ts";
 
+const quotedFilename = process.platform === "win32" ? "a 'file'.txt" : 'a "file".txt';
 const revoked = "execution authorization revoked";
-const commandOptions = { skip: process.platform === "win32", timeout: 10_000 };
+const commandOptions = { timeout: process.platform === "win32" ? 20_000 : 10_000 };
 const fileOptions = { timeout: 10_000 };
 
 function deferred<T>() {
@@ -28,7 +29,7 @@ function fixture(t: TestContext) {
 }
 
 function sentinelCommand() {
-	return { argv: [process.execPath, "-e", 'require("node:fs").writeFileSync("sentinel.txt", "command really ran\\n")'], timeoutMs: 5000 };
+	return { argv: [process.execPath, "-e", 'require("node:fs").writeFileSync("sentinel.txt", "command really ran\\n")'], timeoutMs: process.platform === "win32" ? 15_000 : 5000 };
 }
 
 const scenarios = [
@@ -40,7 +41,7 @@ const scenarios = [
 
 function fileFixture(t: TestContext, scenario: typeof scenarios[number], approveFileWrites = true) {
 	const f = fixture(t);
-	const rel = '目录/a "file".txt';
+	const rel = `目录/${quotedFilename}`;
 	const path = join(f.root, rel);
 	const originalBytes = scenario.original === null ? null : Buffer.from(scenario.original);
 	if (originalBytes !== null) {
@@ -167,10 +168,10 @@ test("changing authorization after a real command starts does not interrupt that
 	// A local file barrier makes the order deterministic. No child can complete
 	// before the parent has changed authorization, regardless of machine speed.
 	const script = 'const fs = require("node:fs"); fs.writeFileSync("started.txt", "started\\n"); const poll = setInterval(() => { if (fs.existsSync("release.txt")) { clearInterval(poll); fs.writeFileSync("completed.txt", "completed\\n"); } }, 10); setTimeout(() => { process.exit(2); }, 4000).unref();';
-	const running = createCommandTool().execute({ argv: [process.execPath, "-e", script], timeoutMs: 5000 }, f.ctx);
+	const running = createCommandTool().execute({ argv: [process.execPath, "-e", script], timeoutMs: process.platform === "win32" ? 15_000 : 5000 }, f.ctx);
 	let result: ToolResult | null = null;
 	try {
-		const deadline = Date.now() + 3000;
+		const deadline = Date.now() + (process.platform === "win32" ? 12_000 : 3000);
 		while (!existsSync(started) && Date.now() < deadline) await delay(10);
 		assert.equal(existsSync(started), true, "The real child must start before authorization changes");
 		assert.equal(existsSync(completed), false);

@@ -33,13 +33,13 @@ test("capture limits validate before spawn; zero and nonfinite values cannot dis
 });
 
 for (const mode of ["continuous", "single-write"] as const) {
-	test(`32 MiB ${mode} producer keeps only 4 MiB and never claims a full archive`, { timeout: 10_000 }, async t => {
+	test(`32 MiB ${mode} producer keeps only 4 MiB and never claims a full archive`, { timeout: process.platform === "win32" ? 30_000 : 10_000 }, async t => {
 		const f = fixture(t);
 		const script = f.write(`${mode}.cjs`, mode === "continuous"
 			? "const b=Buffer.alloc(65536,97);let i=0;function send(){while(i<512){i++;if(!process.stdout.write(b)){process.stdout.once('drain',send);return;}}}send();"
 			: "process.stdout.write(Buffer.alloc(32*1024*1024,98));");
 		const result = await createCommandTool({ ...DEFAULT_COMMAND_LIMITS, captureMaxBytes: 4 * MiB })
-			.execute({ argv: [process.execPath, script], timeoutMs: 5000 }, f.ctx);
+			.execute({ argv: [process.execPath, script], timeoutMs: process.platform === "win32" ? 15_000 : 5000 }, f.ctx);
 		assert.equal(result.ok, false);
 		assert.equal(result.details.outputLimited, true);
 		assert.equal(result.details.captureComplete, false);

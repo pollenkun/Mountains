@@ -1,28 +1,33 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { isolatedEnv } from "./env.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const OLD_USAGE = "用法：\n  mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>] [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]\n" +
 	"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n";
 
-function run(main: string, args: string[], preload?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function run(main: string, args: string[], preload?: string, noWrites = false): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	const home = mkdtempSync(join(tmpdir(), "mountains-entry-home-"));
-	const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
-	for (const key of ["DEEPSEEK_API_KEY", "ZHIPU_API_KEY", "MOONSHOT_API_KEY"]) delete env[key];
-	delete env.NODE_COMPILE_CACHE;
+	const env = isolatedEnv(home);
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [...(preload ? ["--import", preload] : []), main, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), main, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "", stderr = "";
 		child.stdout.on("data", data => { stdout += String(data); });
 		child.stderr.on("data", data => { stderr += String(data); });
 		child.on("error", error => { rmSync(home, { recursive: true, force: true }); reject(error); });
-		child.on("close", code => { rmSync(home, { recursive: true, force: true }); resolve({ code, stdout, stderr }); });
+		child.on("close", code => {
+			try {
+				if (noWrites) assert.deepEqual(readdirSync(home), [], "help/version must leave the home directory untouched");
+				resolve({ code, stdout, stderr });
+			} catch (error) { reject(error); }
+			finally { rmSync(home, { recursive: true, force: true }); }
+		});
 	});
 }
 
@@ -38,7 +43,7 @@ test("an unknown command is a usage error", async () => {
 
 test("version works without a key or TTY and does not emit terminal control codes", async () => {
 	const { version } = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string };
-	assert.deepEqual(await run(MAIN, ["--version"]), { code: 0, stdout: `mountains ${version}\n`, stderr: "" });
+	assert.deepEqual(await run(MAIN, ["--version"], undefined, true), { code: 0, stdout: `mountains ${version}\n`, stderr: "" });
 });
 
 test("version with extra arguments and existing commands retain CLI usage errors", async () => {
@@ -53,4 +58,10 @@ test("version with extra arguments and existing commands retain CLI usage errors
 
 test("without a command the CLI shows its usage, in a terminal too", async () => {
 	assert.deepEqual(await run(MAIN, []), { code: 2, stdout: "", stderr: OLD_USAGE });
+});
+
+test("help is successful without configuration, credentials, a TTY or filesystem writes", async () => {
+	for (const args of [["--help"], ["-h"], ["run", "--help"], ["run", "-h"], ["replay", "--help"], ["replay", "-h"], ["run", "--help", "--config", "missing-config.json"], ["replay", "--help", "--recording", "missing-recording.jsonl"]]) {
+		assert.deepEqual(await run(MAIN, args, undefined, true), { code: 0, stdout: OLD_USAGE, stderr: "" });
+	}
 });

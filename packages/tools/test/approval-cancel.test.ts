@@ -17,7 +17,7 @@ function setup(t: TestContext, approve: ToolContext["approve"]) {
 	};
 	const args = {
 		argv: [process.execPath, "-e", 'require("node:fs").writeFileSync("sentinel.txt", "child-started\\n")'],
-		timeoutMs: 5000,
+		timeoutMs: process.platform === "win32" ? 15_000 : 5000,
 	};
 	return { ac, ctx, args, sentinel: join(root, "sentinel.txt"), tool: createCommandTool() };
 }

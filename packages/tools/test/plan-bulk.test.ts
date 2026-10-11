@@ -7,6 +7,7 @@ import { test, type TestContext } from "node:test";
 import { createPlanTool, type PlanOptions } from "../src/plan.ts";
 import type { ToolContext, ToolResult } from "../src/types.ts";
 import { FileStateTracker, Workspace, sha256 } from "../src/workspace.ts";
+import { useNodeFixture } from "./helpers/node-fixture.ts";
 
 type Match = { path: string; line: number; col: number; text: string; hash: string };
 type SearchStep = { id: string; op: string; paths: string[]; results: Match[] };
@@ -35,8 +36,8 @@ function globallyStopped(result: ToolResult, ctx: ToolContext, path = "proof.txt
 
 // The wrapper only touches the synthetic fixture. All actual matching still uses rg.
 function withRg(t: TestContext, parent: string, beforeSearch = "", afterSearch = "", everyCall = "") {
-	const wrapper = join(parent, "rg-wrapper.cjs");
-	writeFileSync(wrapper, `#!${process.execPath}\nconst fs = require('node:fs'); const cp = require('node:child_process');
+	const wrapper = join(parent, "rg-wrapper.cjs"); useNodeFixture(t, wrapper);
+	writeFileSync(wrapper, `const fs = require('node:fs'); const cp = require('node:child_process');
 const args = process.argv.slice(2); const searching = args.includes('--json');
 ${everyCall}
 if (searching) { ${beforeSearch} }
@@ -51,11 +52,12 @@ process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr ||
 
 test("bulk preserves legacy text, line/column addresses, raw hashes and canonical Unicode path order", async t => {
 	const { root, context } = setup(t);
+	const unusualPath = process.platform === "win32" ? "space 中文 name.txt" : "space newline\nname.txt";
 	const sources = new Map<string, string>([
 		["ascii.txt", "needle\nNO match\nNeedle 中文needle\n"],
 		["bom-crlf.txt", "\ufeffneedle\r\n中文needle\r\n"],
 		["-dash.txt", "needle without final newline"],
-		["space newline\nname.txt", "emoji😀needle\n"],
+		[unusualPath, "emoji😀needle\n"],
 		["\ue000.txt", "needle bmp\n"],
 		["𐀀.txt", "needle supplementary\n"],
 	]);
@@ -73,7 +75,7 @@ test("bulk preserves legacy text, line/column addresses, raw hashes and canonica
 		for (const match of searchStep(bulk).results) assert.equal(match.hash, sha256(Buffer.from(sources.get(match.path)!)));
 		if (pattern === "needle" && caseSensitive) {
 			assert.deepEqual(searchStep(bulk).paths, [...sources.keys()].sort());
-			assert.equal(searchStep(bulk).results.find(match => match.path === "space newline\nname.txt")!.col, 8);
+			assert.equal(searchStep(bulk).results.find(match => match.path === unusualPath)!.col, 8);
 		}
 	}
 });
@@ -196,7 +198,7 @@ for (const outsideMatches of [true, false]) {
 		writeFileSync(join(sub, "a.txt"), "needle LOCAL_ORIGINAL\n");
 		writeFileSync(join(external, "a.txt"), outsideMatches ? "needle EXTERNAL_SYNTHETIC_TEXT\n" : "EXTERNAL_SYNTHETIC_TEXT without the match\n");
 		withRg(t, parent,
-			`fs.renameSync(${JSON.stringify(sub)}, ${JSON.stringify(saved)}); fs.symlinkSync(${JSON.stringify(external)}, ${JSON.stringify(sub)});`,
+			`fs.renameSync(${JSON.stringify(sub)}, ${JSON.stringify(saved)}); fs.symlinkSync(${JSON.stringify(external)}, ${JSON.stringify(sub)}, ${JSON.stringify(process.platform === "win32" ? "junction" : "dir")});`,
 			`fs.unlinkSync(${JSON.stringify(sub)}); fs.renameSync(${JSON.stringify(saved)}, ${JSON.stringify(sub)});`);
 		const ctx = context();
 		const result = await createPlanTool({}).execute({ steps: [{ id: "proof", op: "read", path: "proof.txt" }, { id: "find", op: "search", pattern: "needle", glob: "sub/*.txt" }] }, ctx);

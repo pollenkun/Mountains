@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 import { enableMountainsCompileCache } from "./startup-cache.ts";
 
-const [command] = process.argv.slice(2);
-// Help/version/usage keep their existing no-write behavior. Run/replay and the
-// interactive entry are the only routes that can benefit from caching the engine.
-if (command === "run" || command === "replay"
-	|| (command === undefined || command === "--demo") && process.stdin.isTTY && process.stdout.isTTY) {
+const [command, ...args] = process.argv.slice(2);
+// Help/version/usage must not write to the user's home or initialize run state.
+if ((command === "run" || command === "replay") && !args.some(arg => arg === "--help" || arg === "-h")) {
 	enableMountainsCompileCache();
 }
 try {

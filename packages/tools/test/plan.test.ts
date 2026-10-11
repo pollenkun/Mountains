@@ -7,6 +7,7 @@ import { afterEach, describe, test } from "node:test";
 import { createPlanTool, executeQueryPlan, validateQueryPlan } from "../src/plan.ts";
 import type { ToolContext } from "../src/types.ts";
 import { FileStateTracker, Workspace } from "../src/workspace.ts";
+import { useNodeFixture } from "./helpers/node-fixture.ts";
 
 const roots: string[] = [];
 function setup() {
@@ -103,10 +104,10 @@ describe("bounded query plan", () => {
 		} finally { if (previous === undefined) delete process.env.RIPGREP_CONFIG_PATH; else process.env.RIPGREP_CONFIG_PATH = previous; }
 	});
 
-	test("cancellation and total timeout stop child processes", async () => {
+	test("cancellation and total timeout stop child processes", async t => {
 		const { parent, root, ctx, controller } = setup(); writeFileSync(join(root, "a.txt"), "a"); controller.abort();
 		assert.equal((await executeQueryPlan({ steps: [{ id: "a", op: "glob", patterns: ["*"] }] }, ctx)).ok, false);
-		const fake = join(parent, "slow-rg"); writeFileSync(fake, "#!/bin/sh\nexec sleep 3\n", { mode: 0o700 });
+		const fake = join(parent, "slow-rg.cjs"); writeFileSync(fake, "setTimeout(()=>{},3000);\n"); useNodeFixture(t, fake);
 		const previous = process.env.MOUNTAINS_RG;
 		try {
 			process.env.MOUNTAINS_RG = fake; const started = Date.now();
@@ -116,14 +117,14 @@ describe("bounded query plan", () => {
 		} finally { if (previous === undefined) delete process.env.MOUNTAINS_RG; else process.env.MOUNTAINS_RG = previous; }
 	});
 
-	test("file changes and new matches during a plan invalidate the whole result", async () => {
+	test("file changes and new matches during a plan invalidate the whole result", async t => {
 		const { parent, root, ctx } = setup(); const file = join(root, "a.txt"); writeFileSync(file, "needle");
-		const fake = join(parent, "changing-rg"); const previous = process.env.MOUNTAINS_RG;
+		const fake = join(parent, "changing-rg.cjs"); useNodeFixture(t, fake); const previous = process.env.MOUNTAINS_RG;
 		try {
 			process.env.MOUNTAINS_RG = fake;
 			for (const mutation of [`fs.writeFileSync(${JSON.stringify(file)}, "changed")`, `fs.writeFileSync(${JSON.stringify(join(root, "new.txt"))}, "needle")`]) {
 				writeFileSync(file, "needle");
-				writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);const r=cp.spawnSync('rg',args,{input:fs.readFileSync(0),encoding:'utf8'});if(args.includes('--json')){${mutation};}process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??2);\n`, { mode: 0o700 });
+				writeFileSync(fake, `const fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);const r=cp.spawnSync('rg',args,{input:fs.readFileSync(0),encoding:'utf8'});if(args.includes('--json')){${mutation};}process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??2);\n`, { mode: 0o700 });
 				const result = await executeQueryPlan({ steps: [{ id: "find", op: "search", pattern: "needle", glob: "*.txt" }] }, ctx);
 				assert.equal(result.ok, false); assert.match(result.modelContent, /changed during plan/);
 			}
@@ -144,10 +145,10 @@ describe("bounded query plan", () => {
 		assert.equal(result.ok, false); assert.match(result.modelContent, /regular file/); assert.ok(Date.now() - started < 1000);
 	});
 
-	test("last asynchronous inventory cannot publish stale file contents", async () => {
+	test("last asynchronous inventory cannot publish stale file contents", async t => {
 		const { parent, root, ctx } = setup(); const file = join(root, "a.json"); writeFileSync(file, '{"value":"OLD"}');
-		const countFile = join(parent, "count"); const fake = join(parent, "last-inventory-rg"); const previous = process.env.MOUNTAINS_RG;
-		writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);let n=0;try{n=Number(fs.readFileSync(${JSON.stringify(countFile)},'utf8'));}catch{}if(args.includes('--files')){fs.writeFileSync(${JSON.stringify(countFile)},String(++n));}const r=cp.spawnSync('rg',args,{input:fs.readFileSync(0),encoding:'utf8'});if(n===4){fs.writeFileSync(${JSON.stringify(file)},'{"value":"NEW"}');}process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??2);\n`, { mode: 0o700 });
+		const countFile = join(parent, "count"); const fake = join(parent, "last-inventory-rg.cjs"); useNodeFixture(t, fake); const previous = process.env.MOUNTAINS_RG;
+		writeFileSync(fake, `const fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);let n=0;try{n=Number(fs.readFileSync(${JSON.stringify(countFile)},'utf8'));}catch{}if(args.includes('--files')){fs.writeFileSync(${JSON.stringify(countFile)},String(++n));}const r=cp.spawnSync('rg',args,{input:fs.readFileSync(0),encoding:'utf8'});if(n===4){fs.writeFileSync(${JSON.stringify(file)},'{"value":"NEW"}');}process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exit(r.status??2);\n`, { mode: 0o700 });
 		try {
 			process.env.MOUNTAINS_RG = fake;
 			const result = await executeQueryPlan({ steps: [{ id: "find", op: "glob", patterns: ["*.json"] }, { id: "value", op: "json_field", path: { from: "find", expect: "one" }, field: ["value"] }] }, ctx);

@@ -9,7 +9,7 @@ import type { TestContext } from "node:test";
 import { findWindowsGitBash } from "../src/windows-command.ts";
 import { createCommandTool, DEFAULT_COMMAND_LIMITS, type CommandExecutionHost } from "../src/command.ts";
 import type { WindowsJobCleanup as WindowsCleanupResult, WindowsJobProcess } from "../src/windows-job.ts";
-import { FileStateTracker, Workspace } from "../src/workspace.ts";
+import { BlobStore, FileStateTracker, Workspace } from "../src/workspace.ts";
 import type { ToolContext } from "../src/types.ts";
 
 function installation(root: string) {
@@ -34,6 +34,18 @@ test("Windows Bash discovery supports case-insensitive environment names and per
 test("Windows Bash discovery supports a custom Git installation found through PATH", () => {
 	const root = "D:\\Tools\\Portable Git";
 	assert.equal(findWindowsGitBash({ Path: '"D:\\Tools\\Portable Git\\cmd";C:\\Windows\\System32' }, files(installation(root))), win32.join(root, "bin", "bash.exe"));
+});
+
+test("Windows Bash discovery preserves a quoted semicolon in a custom installation", () => {
+	const root = String.raw`D:\Tools;portable\Git`;
+	assert.equal(findWindowsGitBash({ Path: `"${root}\\cmd";C:\\Windows\\System32` }, files(installation(root))), win32.join(root, "bin", "bash.exe"));
+});
+
+test("Windows Bash discovery uses the same lexical environment key precedence as command launch", () => {
+	const first = String.raw`D:\First\Git`, second = String.raw`D:\Second\Git`;
+	const available = files([...installation(first), ...installation(second)]);
+	assert.equal(findWindowsGitBash({ Path: `${second}\\cmd`, PATH: `${first}\\cmd` }, available), win32.join(first, "bin", "bash.exe"));
+	assert.equal(findWindowsGitBash({ PATH: undefined, Path: `${second}\\cmd` }, available), win32.join(second, "bin", "bash.exe"));
 });
 
 test("Windows Bash discovery rejects WSL and an unrelated PATH bash", () => {
@@ -110,7 +122,7 @@ function fixture(t: TestContext, options: Parameters<typeof fakeJob>[0] = {}) {
 		},
 	};
 	const ctx: ToolContext = {
-		workspace: new Workspace(root), files: new FileStateTracker(), signal: controller.signal,
+		workspace: new Workspace(root), files: new FileStateTracker(), blobs: new BlobStore(join(root, "blobs"), { workspaceRoot: root, sessionId: "windows-command-test" }), signal: controller.signal,
 		toolCallId: t.name, approve: async () => "allow",
 	};
 	return { job, ctx, execution, controller, spawned, launches };
@@ -201,14 +213,20 @@ test("Windows natural command exit preserves its real nonzero code and cleans de
 	assert.equal(f.job.counts().stopCalls, 0);
 });
 
-test("Windows cleanup failure cannot claim success or wait forever on inherited output pipes", { timeout: 2000 }, async t => {
+for (const captureMaxBytes of [undefined, 1024]) test(`Windows cleanup failure keeps output partial (capture limit ${captureMaxBytes ?? "none"})`, { timeout: 2000 }, async t => {
 	const f = fixture(t, { cleanupFailure: true, inheritedPipes: true });
-	const running = createCommandTool(DEFAULT_COMMAND_LIMITS, {}, f.execution).execute({ argv: ["node", "wait.js"] }, f.ctx);
-	await f.spawned; f.controller.abort();
+	const running = createCommandTool({ ...DEFAULT_COMMAND_LIMITS, ...(captureMaxBytes === undefined ? {} : { captureMaxBytes }) }, {}, f.execution).execute({ argv: ["node", "wait.js"] }, f.ctx);
+	await f.spawned; f.job.stdout.write("retained prefix"); f.controller.abort();
 	const result = await running;
 	assert.equal(result.ok, false);
 	assert.equal(result.details.processTreeCleanupConfirmed, false);
 	assert.match(result.modelContent, /后台进程未确认结束/);
+	assert.equal(result.details.captureComplete, false);
+	assert.equal(result.fullOutputRef, undefined);
+	assert.match(result.modelContent, /partialOutputRef=/);
+	const archive = f.ctx.blobs!.inspectCommand(String(result.details.partialOutputRef), t.name, { maxArchiveBytes: 1024 });
+	assert.equal(archive?.bytes.toString(), "retained prefix");
+	assert.equal(archive?.commandState.captureComplete, false);
 	assert.equal(f.job.counts().fallbackKills, 1);
 	assert.equal(f.job.counts().unrefCalls, 1);
 	assert.equal(f.job.child.stdout.destroyed, true);

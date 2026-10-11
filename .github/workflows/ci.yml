@@ -10,18 +10,16 @@ permissions:
 
 jobs:
   check:
-    name: macOS / Node ${{ matrix.node }}
-    runs-on: macos-latest
-    timeout-minutes: 15
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node: [22.19.0, 24.x]
     env:
       MOUNTAINS_PYTHON: python
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,15 +29,38 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Install ripgrep
+      - name: Install ripgrep (Linux)
+        if: runner.os == 'Linux'
+        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
         run: command -v rg >/dev/null || brew install ripgrep
+      - name: Install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Check required tools
         run: |
           node --version
           npm --version
           git --version
-          bash --version
           rg --version
-          "$MOUNTAINS_PYTHON" --version
+          python --version
+      - name: Check Bash (POSIX)
+        if: runner.os != 'Windows'
+        run: bash --version
+      - name: Check Git Bash and Windows PowerShell
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:ProgramFiles\Git\bin\bash.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command '$PSVersionTable.PSVersion'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm ci
       - run: npm run check
+      - run: npm run mountains -- --help

@@ -11,32 +11,33 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import type { EngineEvent } from "@mountains/protocol";
 import { AgentSession, BudgetGuard, DEFAULT_LIMITS, type RunSummary, replayAdapterFromRecording } from "@mountains/engine";
 import { ApprovalChatAdapter, ChatCompletionsAdapter, currencyOf, type Currency, type ModelAdapter, pricingFor, providerOf } from "@mountains/providers";
 import { Workspace } from "@mountains/tools";
-import { loadConfig } from "./config.ts";
+import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
+import { expandHome, mountainsHome } from "./paths.ts";
 
 const EXIT = { completed: 0, failed: 1, usage: 2, limit: 3, cancelled: 130 } as const;
 
+const USAGE = "用法：\n  mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>] [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]\n" +
+	"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n";
+
 function usage(msg?: string): never {
 	if (msg) process.stderr.write(`错误：${msg}\n`);
-	process.stderr.write(
-		"用法：\n  mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>] [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]\n" +
-			"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n",
-	);
+	process.stderr.write(USAGE);
 	process.exit(EXIT.usage);
 }
 
-function expandHome(p: string): string {
-	return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+function help(): never {
+	process.stdout.write(USAGE);
+	process.exit(0);
 }
 
 /** Per-project data outside the workspace: ~/.mountains/projects/<hash of the real workspace path>. */
-function projectDir(workspaceRoot: string, home = process.env.MOUNTAINS_HOME ?? join(homedir(), ".mountains")): string {
+function projectDir(workspaceRoot: string, home = mountainsHome()): string {
 	const root = existsSync(workspaceRoot) ? realpathSync(workspaceRoot) : resolve(workspaceRoot);
 	return join(resolve(home), "projects", createHash("sha256").update(root).digest("hex").slice(0, 16));
 }
@@ -115,6 +116,7 @@ async function cmdRun(argv: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args: argv,
 		options: {
+			help: { type: "boolean", short: "h" },
 			task: { type: "string" },
 			"task-file": { type: "string" },
 			workspace: { type: "string" },
@@ -127,13 +129,20 @@ async function cmdRun(argv: string[]): Promise<void> {
 		},
 		strict: true,
 	});
+	if (values.help) help();
 	if (!values.workspace) usage("缺少 --workspace");
 	if (!values.task === !values["task-file"]) usage("--task 与 --task-file 必须且只能给一个");
 	const task = values.task ?? readFileSync(values["task-file"] as string, "utf8");
 	const loaded = loadConfig(values.config ? resolve(values.config) : null, values["base-url"] ? { baseUrl: values["base-url"] } : {});
 	const cfg = loaded.config;
+	const spendLedger = resolve(expandHome(values["spend-ledger"] ?? (loaded.spendLedgerExplicit ? cfg.spendLedger : join(mountainsHome(), "spend.jsonl"))));
+	const legacyLedger = resolve(expandHome(DEFAULT_CONFIG.spendLedger));
+	if (values["spend-ledger"] === undefined && !loaded.spendLedgerExplicit && spendLedger !== legacyLedger
+		&& !existsSync(spendLedger) && existsSync(legacyLedger)) {
+		throw new Error(`检测到旧累计花费台账：${legacyLedger}。请先将其迁移到 ${spendLedger}，或用 --spend-ledger 显式指定原路径；为避免重置累计预算，本次未发出请求。`);
+	}
 	const runId = values["run-id"] ?? `run_${randomUUID().slice(0, 12)}`;
-	const outDir = resolve(values.out ?? join(expandHome("~/.mountains/runs"), runId));
+	const outDir = resolve(values.out ?? join(mountainsHome(), "runs", runId));
 	mkdirSync(outDir, { recursive: true });
 
 	let apiKey = process.env[cfg.apiKeyEnv];
@@ -160,7 +169,7 @@ async function cmdRun(argv: string[]): Promise<void> {
 		}) };
 	}
 	const userId = cfg.userIdMode === "per-run" ? `mtn-${runId}` : cfg.userIdMode === "fixed" ? cfg.userIdFixed : undefined;
-	const budget = BudgetGuard.fromEnv(resolve(expandHome(values["spend-ledger"] ?? cfg.spendLedger)), currencyOf(cfg.model, cfg.billingCurrency) ?? "USD");
+	const budget = BudgetGuard.fromEnv(spendLedger, currencyOf(cfg.model, cfg.billingCurrency) ?? "USD");
 	const ws = new Workspace(resolve(values.workspace));
 	const session = new AgentSession({
 		workspace: resolve(values.workspace),
@@ -199,9 +208,10 @@ async function cmdRun(argv: string[]): Promise<void> {
 async function cmdReplay(argv: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args: argv,
-		options: { recording: { type: "string" }, workspace: { type: "string" }, out: { type: "string" }, json: { type: "boolean", default: false } },
+		options: { help: { type: "boolean", short: "h" }, recording: { type: "string" }, workspace: { type: "string" }, out: { type: "string" }, json: { type: "boolean", default: false } },
 		strict: true,
 	});
+	if (values.help) help();
 	if (!values.recording || !values.workspace) usage("replay 需要 --recording 与 --workspace");
 	const lines = readFileSync(values.recording, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; data: Record<string, unknown> });
 	const meta = lines.find((l) => l.kind === "meta")?.data ?? {};
@@ -214,7 +224,7 @@ async function cmdReplay(argv: string[]): Promise<void> {
 		billingCurrency = meta.billingCurrency;
 		if (!pricingFor(model, billingCurrency)) throw new Error(`录制模型 ${model} 没有 ${billingCurrency} 官方价格`);
 	}
-	const outDir = resolve(values.out ?? join(expandHome("~/.mountains/replays"), `replay_${randomUUID().slice(0, 8)}`));
+	const outDir = resolve(values.out ?? join(mountainsHome(), "replays", `replay_${randomUUID().slice(0, 8)}`));
 	mkdirSync(outDir, { recursive: true });
 	const adapter: ModelAdapter = replayAdapterFromRecording(values.recording);
 	const session = new AgentSession({
@@ -237,7 +247,8 @@ async function cmdReplay(argv: string[]): Promise<void> {
 
 const [cmd, ...rest] = process.argv.slice(2);
 try {
-	if (cmd === "--version" && rest.length === 0) {
+	if ((cmd === "--help" || cmd === "-h") && rest.length === 0) help();
+	else if (cmd === "--version" && rest.length === 0) {
 		const { version } = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { version: string };
 		process.stdout.write(`mountains ${version}\n`);
 	} else if (cmd === "run") await cmdRun(rest);

@@ -29,7 +29,7 @@ describe("immutable evidence", () => {
 	test("first truncated command response exposes its complete original output including middle error", async () => {
 		const { blobs, ctx } = setup();
 		const text = Array.from({ length: 500 }, (_, i) => i === 250 ? "ERROR_ONLY_IN_MIDDLE" : `row ${i}`).join("\r\n");
-		const tool = createCommandTool({ defaultTimeoutMs: 5000, maxTimeoutMs: 5000, headLines: 3, tailLines: 3, maxChars: 200 });
+		const tool = createCommandTool({ defaultTimeoutMs: process.platform === "win32" ? 15_000 : 5000, maxTimeoutMs: process.platform === "win32" ? 15_000 : 5000, headLines: 3, tailLines: 3, maxChars: 200 });
 		const result = await tool.execute({ argv: [process.execPath, "-e", `process.stdout.write(${JSON.stringify(text)})`] }, ctx);
 		assert.equal(result.ok, true);
 		assert.equal(result.details.truncated, true);
@@ -164,7 +164,7 @@ describe("immutable evidence", () => {
 		rmSync(file);
 		const parent = file.slice(0, file.lastIndexOf("/"));
 		rmSync(parent, { recursive: true });
-		symlinkSync(root, parent);
+		symlinkSync(root, parent, process.platform === "win32" ? "junction" : "dir");
 		assert.equal(blobs.getBytes(ref), null);
 	});
 
@@ -239,7 +239,7 @@ describe("immutable evidence", () => {
 	test("archive failure preserves command success but never invents a recovery ref", async () => {
 		const { ctx } = setup();
 		ctx.blobs!.put = () => { throw new Error("simulated disk failure"); };
-		const tool = createCommandTool({ defaultTimeoutMs: 5000, maxTimeoutMs: 5000, headLines: 1, tailLines: 1, maxChars: 40 });
+		const tool = createCommandTool({ defaultTimeoutMs: process.platform === "win32" ? 15_000 : 5000, maxTimeoutMs: process.platform === "win32" ? 15_000 : 5000, headLines: 1, tailLines: 1, maxChars: 40 });
 		const result = await tool.execute({ argv: [process.execPath, "-e", 'process.stdout.write("abcdef\\n".repeat(100))'] }, ctx);
 		assert.equal(result.ok, true);
 		assert.equal(result.fullOutputRef, undefined);

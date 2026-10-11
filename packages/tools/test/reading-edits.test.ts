@@ -24,6 +24,7 @@ test("batch validates every edit against original content and commits once with 
 	const path = join(root, "a.txt");
 	writeFileSync(path, "alpha\r\nbeta\r\ngamma\r\n");
 	chmodSync(path, 0o750);
+	const originalMode = statSync(path).mode & 0o777;
 	await createReadTool().execute({ path: "a.txt" }, ctx);
 	let hooks = 0;
 	ctx.beforeWrite = async () => { hooks++; };
@@ -32,7 +33,7 @@ test("batch validates every edit against original content and commits once with 
 	assert.equal(hooks, 1);
 	assert.equal(result.writes?.length, 1);
 	assert.equal(readFileSync(path, "utf8"), "beta\r\nB\r\nG\r\n");
-	assert.equal(statSync(path).mode & 0o777, 0o750);
+	assert.equal(statSync(path).mode & 0o777, originalMode);
 	assert.ok(!readdirSync(root).some((p) => p.endsWith(".tmp")));
 });
 
@@ -105,7 +106,7 @@ test("parent path changed to an outside symlink during checkpoint cannot redirec
 	await createReadTool().execute({ path: "dir/a.txt" }, ctx);
 	ctx.beforeWrite = async () => {
 		renameSync(join(root, "dir"), join(root, "saved"));
-		symlinkSync(outside, join(root, "dir"));
+		symlinkSync(outside, join(root, "dir"), process.platform === "win32" ? "junction" : "dir");
 	};
 	const result = await batch.execute({ path: "dir/a.txt", edits: [{ oldText: "alpha", newText: "A" }] }, ctx);
 	assert.equal(result.ok, false);

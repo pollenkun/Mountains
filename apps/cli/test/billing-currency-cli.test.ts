@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { isolatedEnv } from "./env.ts";
 import { describe, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { RunSummary } from "@mountains/engine";
@@ -35,9 +36,12 @@ function temporaryRoot(t: TestContext) {
 
 function runCli(t: TestContext, args: string[], workspace: string, envName: string, globalBudget = true): Promise<CommandResult> {
 	// Pass only process essentials and fixture settings. Never inherit model Keys or proxy settings.
-	const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
+	const home = join(dirname(workspace), "home");
+	mkdirSync(home, { recursive: true });
+	const env: NodeJS.ProcessEnv = { ...isolatedEnv(home),
 		...(globalBudget ? { MOUNTAINS_BUDGET: "7" } : {}), MOUNTAINS_BUDGET_USD: "7", [envName]: "offline-billing-fixture-not-a-real-key" };
-	assert.equal(Object.hasOwn(env, "HOME"), false);
+	assert.equal(env.HOME, home);
+	assert.equal(env.USERPROFILE, home);
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [MAIN, ...args], { cwd: workspace, env, signal: t.signal,
 			timeout: 10_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] });

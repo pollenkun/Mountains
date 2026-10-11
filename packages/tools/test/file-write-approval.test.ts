@@ -7,6 +7,7 @@ import { generalTools } from "../src/index.ts";
 import type { ApprovalRequest, ToolContext } from "../src/types.ts";
 import { FileStateTracker, sha256, Workspace } from "../src/workspace.ts";
 
+const quotedFilename = process.platform === "win32" ? "a 'file'.txt" : 'a "file".txt';
 const cases = [
 	{ name: "single edit", tool: "file_edit", original: "alpha\r\nbeta\r\ngamma\r\n", args: { oldText: "alpha\nbeta", newText: "甲\n乙" }, after: "甲\r\n乙\r\ngamma\r\n" },
 	{ name: "batch edit", tool: "file_edit", original: "alpha\r\nbeta\r\ngamma\r\n", args: { edits: [{ oldText: "alpha", newText: "甲" }, { oldText: "gamma", newText: "丙" }] }, after: "甲\r\nbeta\r\n丙\r\n" },
@@ -17,7 +18,7 @@ const cases = [
 function fixture(t: TestContext, scenario: typeof cases[number], enabled?: boolean) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "mountains-file-approval-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const rel = '目录/a "file".txt';
+	const rel = `目录/${quotedFilename}`;
 	const path = join(root, rel);
 	if (scenario.original !== null) { mkdirSync(dirname(path)); writeFileSync(path, scenario.original); }
 	const controller = new AbortController();
@@ -164,12 +165,12 @@ test("file_write rechecks the parent directory after approval and checkpoint", a
 		const outside = mkdtempSync(join(tmpdir(), "mountains-file-approval-outside-"));
 		t.after(() => rmSync(outside, { recursive: true, force: true }));
 		if (!existsSync(dirname(f.path))) mkdirSync(dirname(f.path));
-		writeFileSync(join(outside, 'a "file".txt'), "outside must stay unchanged\n");
-		f.ctx.beforeWrite = async () => { renameSync(dirname(f.path), join(f.root, "saved")); symlinkSync(outside, dirname(f.path)); };
+		writeFileSync(join(outside, quotedFilename), "outside must stay unchanged\n");
+		f.ctx.beforeWrite = async () => { renameSync(dirname(f.path), join(f.root, "saved")); symlinkSync(outside, dirname(f.path), process.platform === "win32" ? "junction" : "dir"); };
 		const result = await f.tool.execute(f.args, f.ctx);
 		assert.equal(result.ok, false);
-		assert.equal(readFileSync(join(outside, 'a "file".txt'), "utf8"), "outside must stay unchanged\n");
-		if (scenario.original !== null) assert.equal(readFileSync(join(f.root, "saved", 'a "file".txt'), "utf8"), scenario.original);
+		assert.equal(readFileSync(join(outside, quotedFilename), "utf8"), "outside must stay unchanged\n");
+		if (scenario.original !== null) assert.equal(readFileSync(join(f.root, "saved", quotedFilename), "utf8"), scenario.original);
 	}
 });
 

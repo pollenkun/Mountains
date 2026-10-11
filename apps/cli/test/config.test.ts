@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig } from "../src/config.ts";
+import { DEFAULT_CONFIG, loadConfig } from "../src/config.ts";
 
 test("defaults: high thinking, built-in prompt, whole-file reads, batch edits and edit feedback", () => {
 	const { config, systemPrompt } = loadConfig(null);
@@ -45,4 +45,19 @@ test("a system prompt file is read relative to the config file and changes the c
 test("tool switches must be booleans", () => {
 	assert.equal(loadConfig(null, { tools: { editFeedback: false } as never }).config.tools.editFeedback, false);
 	assert.throws(() => loadConfig(null, { tools: { batchEdit: "yes" } as never }), /batchEdit/);
+});
+
+
+test("explicit ledger configuration is recorded without changing default config or hash", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "mountains-config-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const path = join(dir, "config.json");
+	writeFileSync(path, JSON.stringify({ spendLedger: DEFAULT_CONFIG.spendLedger }));
+	const implicit = loadConfig(null);
+	assert.equal(implicit.spendLedgerExplicit, false);
+	for (const explicit of [loadConfig(path), loadConfig(null, { spendLedger: DEFAULT_CONFIG.spendLedger })]) {
+		assert.equal(explicit.spendLedgerExplicit, true);
+		assert.deepEqual(explicit.config, implicit.config);
+		assert.equal(explicit.sha256, implicit.sha256);
+	}
 });

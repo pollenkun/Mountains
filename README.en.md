@@ -4,7 +4,7 @@
 
 Mountains is a coding agent: an engine plus a single-command CLI. Give it a task and a directory; it reads code, edits it, runs commands, and exits when done.
 
-Preview 1 is a technical experiment, not an everyday tool: there is no interactive interface, no multi-turn conversation, and it has only been tested on macOS. We are publishing it to show how the context management and tool design below perform on real tasks. A desktop app comes with Preview 2.
+Preview 1 is a technical experiment, not an everyday tool: there is no interactive interface or multi-turn conversation. We are publishing it to show how the context management and tool design below perform on real tasks. A desktop app comes with Preview 2.
 
 ## Results
 
@@ -75,9 +75,15 @@ Six tools: `query_plan` (search, list and read files in one call), `file_read`, 
 
 ## Usage
 
-Requires Node.js 22.19 or later and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
+Requires Node.js 22.19 or later, npm, Git, and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`). Git stores file checkpoints.
 
-The example below uses macOS and DeepSeek. Download the repository and install its dependencies:
+This update adds Linux and Windows compatibility. The offline tests pass on Linux. These changes have not yet been tested on real Windows or macOS machines. CI is set up for all three systems, each with Node.js 22.19 and 24.
+
+- **Linux, macOS:** Bash is also required. Minimal Linux images may need it installed separately; process cleanup needs access to `/proc` on Linux.
+- **Windows 10/11:** install Git for Windows, including Git Bash, and keep the built-in Windows PowerShell available. Start from PowerShell, cmd, or Git Bash.
+- **WSL:** install and run Linux Node, Git, rg, and Bash inside WSL. Do not mix in Windows Node.
+
+The example below uses DeepSeek. Its Bash commands work on Linux, macOS, and Git Bash on Windows; PowerShell commands follow below. Download the repository and install its dependencies:
 
 ```bash
 git clone https://github.com/pollenkun/Mountains.git
@@ -127,11 +133,46 @@ node -e "require('node:assert/strict').equal(require('./demo-workspace/add.cjs')
 
 An `OK` result means this example passes. For your own project, replace `--workspace` with its path and `--task` with your request. Run all the commands above from the Mountains repository directory.
 
-Check the code:
+### Windows PowerShell
+
+If you use PowerShell, run these commands from the Mountains repository directory. Node writes the files to avoid the BOM added by Windows PowerShell 5.1:
+
+```powershell
+npm.cmd ci
+$env:DEEPSEEK_API_KEY = "your-key"
+$env:MOUNTAINS_BUDGET = "10"
+node -e "require('node:fs').writeFileSync('config.json', JSON.stringify({billingCurrency:'CNY',limits:{maxCost:2}}))"
+node -e "require('node:fs').mkdirSync('demo-workspace',{recursive:true});require('node:fs').writeFileSync('demo-workspace/add.cjs','exports.add = (a, b) => a - b;\n')"
+npm.cmd run mountains -- run --task "Fix add in add.cjs so it returns the sum of two numbers" --workspace ./demo-workspace --config config.json
+```
+
+The last command calls DeepSeek, incurs model charges, and edits the example directory directly.
+
+The command tool uses Bash syntax for `shellScript`. Direct `argv` calls need a native executable; run `npm.cmd` and `.bat` files through `cmd.exe /c` or Git Bash. Windows PowerShell manages child processes. If system policy blocks it, the command tool cannot run.
+
+### Recordings and spending
+
+Recordings, replays, archives, and the spending ledger go in `.mountains` under your home directory (`%USERPROFILE%\.mountains` on Windows). Set `MOUNTAINS_HOME` to use another directory. A ledger path set in the config or through `--spend-ledger` takes precedence.
+
+Previously, `MOUNTAINS_HOME` moved only archives. It now moves the default ledger too. If the old `~/.mountains/spend.jsonl` still exists and the new directory has no ledger, the CLI stops first. Move the old ledger over, or keep its original path with `--spend-ledger`, so cumulative spending does not restart at zero.
+
+The compile cache is separate: Linux uses `$XDG_CACHE_HOME` (default `~/.cache`), macOS uses `~/Library/Caches`, and Windows uses `%LOCALAPPDATA%`, followed by `mountains/node-compile-cache`. An unavailable cache does not prevent startup.
+
+### Checks
+
+Help requires no API key and sends no model request:
+
+```bash
+npm run mountains -- --help
+```
+
+Check the code. These tests run locally and make no paid model calls:
 
 ```bash
 npm run check
 ```
+
+The tests also need Python 3: `python3` on Linux/macOS, or `python` on Windows. Use `MOUNTAINS_PYTHON` to select another installed interpreter. Windows must allow symlink creation for those tests to run. POSIX permissions, special filenames, and macOS sandbox tests run only on the relevant systems.
 
 ## License
 

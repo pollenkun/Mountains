@@ -222,7 +222,7 @@ test("payload corruption and payload/source symlinks fail closed", () => {
 	assert.equal(store.inspectCommand(sourceLinked, "call-a", cap), null);
 	const folderLinked = raw(store, "folder-link");
 	const folder = sources(dir, folderLinked);
-	rmSync(folder, { recursive: true }); symlinkSync(root, folder);
+	rmSync(folder, { recursive: true }); symlinkSync(root, folder, process.platform === "win32" ? "junction" : "dir");
 	assert.equal(store.inspectCommand(folderLinked, "call-a", cap), null);
 });
 

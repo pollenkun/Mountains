@@ -40,6 +40,15 @@ test("file content or exact edit arguments changing invalidates the original sna
 	assert.notEqual(before.bindings.find(b => b.role === "target")!.sha256, after.bindings.find(b => b.role === "target")!.sha256);
 });
 
+test("Windows absolute paths can differ in drive and directory letter case", { skip: process.platform !== "win32" }, t => {
+	const { root, workspace } = fixture(t);
+	writeFileSync(join(root, "case.txt"), "original");
+	const alternate = join(root, "case.txt").toUpperCase();
+	const snapshot = snapshotApprovalAction(workspace, "file_write", { path: alternate, content: "next" });
+	assert.ok(snapshot.bindings.some(binding => binding.role === "target" && binding.kind === "file"));
+	assert.throws(() => snapshotApprovalAction(workspace, "file_write", { path: root + "-sibling/file.txt", content: "next" }), /outside/);
+});
+
 test("same bytes replacing the inode and parent directory identity are both detected", t => {
 	const { root, workspace } = fixture(t);
 	mkdirSync(join(root, "dir")); writeFileSync(join(root, "dir", "a.txt"), "same");

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { win32 } from "node:path";
+import { windowsEnvValue as envValue, windowsPathEntries } from "./windows-command.ts";
 
 export interface WindowsJobCleanup { confirmed: boolean; error?: string; trackedDescendants?: number }
 export type WindowsCleanupResult = WindowsJobCleanup;
@@ -21,28 +22,6 @@ export interface WindowsJobHost {
 	startupMs?: number;
 	stopMs?: number;
 	exitMs?: number;
-}
-
-function envValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
-	const key = Object.keys(environment).sort().find(key => key.toUpperCase() === name.toUpperCase());
-	return key === undefined ? undefined : environment[key];
-}
-
-function windowsPathEntries(path: string): string[] {
-	const entries: string[] = [];
-	let start = 0;
-	while (start < path.length) {
-		let end = start;
-		if (path[start] === '"' || path[start] === "'") {
-			const quoteEnd = path.indexOf(path[start]!, start + 1);
-			end = quoteEnd < 0 ? path.length : quoteEnd;
-		}
-		end = path.indexOf(";", end);
-		if (end < 0) end = path.length;
-		if (end > start) entries.push(path.slice(start, end).replace(/^["']/, "").replace(/["']$/, ""));
-		start = end + 1;
-	}
-	return entries;
 }
 
 /** The quoting rules used by libuv's quote_cmd_arg, not cmd.exe or PowerShell syntax. */

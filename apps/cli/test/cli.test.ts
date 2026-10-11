@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.ts";
+import { isolatedEnv } from "./env.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 
@@ -42,6 +43,7 @@ describe("mountains run（本地假 DeepSeek 服务，离线）", () => {
 	let port = 0;
 	let script: string[] = [];
 	const auths: string[] = [];
+	const home = mkdtempSync(join(tmpdir(), "cli-home-"));
 	before(async () => {
 		server = http.createServer(async (req, res) => {
 			for await (const _ of req) void _;
@@ -55,13 +57,10 @@ describe("mountains run（本地假 DeepSeek 服务，离线）", () => {
 	after(() => {
 		server.closeAllConnections();
 		server.close();
+		rmSync(home, { recursive: true, force: true });
 	});
 
-	const baseEnv = () => {
-		const env: NodeJS.ProcessEnv = { ...process.env, MOUNTAINS_BUDGET_USD: "5" };
-		delete env.DEEPSEEK_API_KEY;
-		return env;
-	};
+	const baseEnv = () => ({ ...isolatedEnv(home), MOUNTAINS_BUDGET_USD: "5" });
 
 	test("--json：输出结构化结果，写 events/ledger/recording/summary/config，环回地址不需要 Key", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "cli-ws-"));
@@ -89,6 +88,80 @@ describe("mountains run（本地假 DeepSeek 服务，离线）", () => {
 		const rp = await runCli(["replay", "--recording", join(out, "recording.jsonl"), "--workspace", ws2, "--json", "--out", mkdtempSync(join(tmpdir(), "cli-rp-"))], baseEnv());
 		assert.equal(rp.code, 0, rp.stderr);
 		assert.equal(readFileSync(join(ws2, "a.txt"), "utf8"), "world\n");
+	});
+
+	test("MOUNTAINS_HOME relocates default runs, replay output, spend ledger and project archives", async (t) => {
+		const root = mkdtempSync(join(tmpdir(), "cli-state-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const state = join(root, "state with spaces");
+		const env = { ...baseEnv(), MOUNTAINS_HOME: state, NODE_DISABLE_COMPILE_CACHE: "1" };
+		script = [finalTurn("portable state")];
+		const run = await runCli(["run", "--task", "x", "--workspace", root, "--json", "--run-id", "portable", "--base-url", `http://127.0.0.1:${port}`], env);
+		assert.equal(run.code, 1, "state inside the workspace must still be rejected");
+		assert.match(run.stderr, /任务工作区之外/);
+		const workspace = mkdtempSync(join(tmpdir(), "cli-state-workspace-"));
+		t.after(() => rmSync(workspace, { recursive: true, force: true }));
+		const result = await runCli(["run", "--task", "x", "--workspace", workspace, "--json", "--run-id", "portable", "--base-url", `http://127.0.0.1:${port}`], env);
+		assert.equal(result.code, 0, result.stderr);
+		const summary = JSON.parse(result.stdout);
+		assert.equal(summary.outDir, join(state, "runs", "portable"));
+		assert.ok(existsSync(join(state, "spend.jsonl")));
+		assert.equal(readdirSync(join(state, "projects")).length, 1);
+		const replay = await runCli(["replay", "--recording", join(summary.outDir, "recording.jsonl"), "--workspace", workspace, "--json"], env);
+		assert.equal(replay.code, 0, replay.stderr);
+		const replaySummary = JSON.parse(replay.stdout);
+		assert.equal(replaySummary.outDir, join(state, "replays", readdirSync(join(state, "replays"))[0]!));
+	});
+
+	test("an explicitly configured default ledger path wins over MOUNTAINS_HOME", async (t) => {
+		const root = mkdtempSync(join(tmpdir(), "cli-explicit-ledger-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const home = join(root, "home"), workspace = join(root, "workspace"), state = join(root, "state");
+		mkdirSync(home); mkdirSync(workspace);
+		const config = join(root, "config.json");
+		writeFileSync(config, JSON.stringify({ spendLedger: "~/.mountains/spend.jsonl", checkpoints: false }));
+		script = [finalTurn("explicit ledger")];
+		const result = await runCli(["run", "--task", "x", "--workspace", workspace, "--json", "--config", config, "--base-url", `http://127.0.0.1:${port}`], {
+			...isolatedEnv(home), MOUNTAINS_HOME: state, MOUNTAINS_BUDGET_USD: "5", NODE_DISABLE_COMPILE_CACHE: "1",
+		});
+		assert.equal(result.code, 0, result.stderr);
+		assert.ok(existsSync(join(home, ".mountains", "spend.jsonl")));
+		assert.equal(existsSync(join(state, "spend.jsonl")), false);
+		assert.ok(existsSync(join(state, "runs")));
+	});
+
+	test("relocating a legacy default ledger requires explicit migration or selection before HTTP", async (t) => {
+		const root = mkdtempSync(join(tmpdir(), "cli-ledger-migration-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const home = join(root, "home"), workspace = join(root, "workspace"), state = join(root, "state");
+		mkdirSync(join(home, ".mountains"), { recursive: true }); mkdirSync(workspace);
+		const legacy = join(home, ".mountains", "spend.jsonl"), relocated = join(state, "spend.jsonl");
+		const history = `${JSON.stringify({ at: "2026-01-01T00:00:00Z", runId: "previous", requestId: "previous", amount: 1, currency: "USD", partial: false })}\n`;
+		writeFileSync(legacy, history);
+		const env = { ...isolatedEnv(home), MOUNTAINS_HOME: state, MOUNTAINS_BUDGET_USD: "5", NODE_DISABLE_COMPILE_CACHE: "1" };
+		const args = ["run", "--task", "x", "--workspace", workspace, "--json", "--base-url", `http://127.0.0.1:${port}`];
+		const requestsBefore = auths.length;
+		const blocked = await runCli(args, env);
+		assert.equal(blocked.code, 1, blocked.stderr);
+		assert.match(blocked.stderr, /旧累计花费台账/);
+		assert.match(blocked.stderr, /--spend-ledger/);
+		assert.ok(blocked.stderr.includes(legacy) && blocked.stderr.includes(relocated));
+		assert.equal(auths.length, requestsBefore, "migration warning must precede all HTTP requests");
+		assert.equal(readFileSync(legacy, "utf8"), history, "legacy history must not be modified");
+		assert.equal(existsSync(state), false, "migration warning must not create replacement state");
+
+		script = [finalTurn("keep the existing ledger")];
+		const explicit = await runCli([...args, "--spend-ledger", legacy], env);
+		assert.equal(explicit.code, 0, explicit.stderr);
+		assert.ok(JSON.parse(explicit.stdout).budget.globalSpent > 1);
+		assert.equal(existsSync(relocated), false);
+
+		// Simulate a user-supplied ledger at the relocated destination.
+		writeFileSync(relocated, history);
+		script = [finalTurn("use the relocated ledger")];
+		const migrated = await runCli(args, env);
+		assert.equal(migrated.code, 0, migrated.stderr);
+		assert.ok(JSON.parse(migrated.stdout).budget.globalSpent > 1);
 	});
 
 	test("非环回地址且没有 Key：用法错误退出 2，不发请求", async () => {

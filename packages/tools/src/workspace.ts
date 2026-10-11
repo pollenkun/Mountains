@@ -22,7 +22,8 @@ export class Workspace {
 	}
 
 	private inside(abs: string): boolean {
-		return abs === this.root || abs.startsWith(this.root + sep);
+		const path = relative(this.root, abs);
+		return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
 	}
 
 	/** 把模型给出的路径解析为绝对路径并校验边界。forWrite 时允许文件不存在（但父目录必须在工作区内）。 */

@@ -103,7 +103,10 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 	let directoryReadBytes = 0;
 	const observed = new Map<string, BigIntStats>();
 	const directoryHashes = new Map<string, string>();
-	function inside(path: string): boolean { return path === root || path.startsWith(root + sep); }
+	function inside(path: string): boolean {
+		const rel = relative(root, path);
+		return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + sep));
+	}
 	function checkPath(path: string): void {
 		if (!path || path.includes("\0") || Buffer.byteLength(path) > APPROVAL_ACTION_LIMITS.pathBytes) fail("invalid or oversized path");
 	}

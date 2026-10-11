@@ -1,7 +1,7 @@
 import { enableCompileCache } from "node:module";
 import { lstatSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { compileCacheParent } from "./paths.ts";
 
 /** Optional Node bytecode/TypeScript cache. It never stores model/session data. */
 export function enableMountainsCompileCache(): void {
@@ -9,19 +9,20 @@ export function enableMountainsCompileCache(): void {
 	// making directories when disabled; callers still load the normal program.
 	if (process.env.NODE_DISABLE_COMPILE_CACHE !== undefined) return;
 	try {
-		let directory = homedir();
-		for (const [index, part] of [".cache", "mountains", "node-compile-cache"].entries()) {
-			directory = join(directory, part);
-			let stat = lstatSync(directory, { throwIfNoEntry: false });
+		const parent = compileCacheParent();
+		const directory = join(parent, "mountains", "node-compile-cache");
+		const directories = [parent, join(parent, "mountains"), directory];
+		for (const [index, current] of directories.entries()) {
+			let stat = lstatSync(current, { throwIfNoEntry: false });
 			if (!stat) {
-				mkdirSync(directory, { mode: 0o700 });
-				stat = lstatSync(directory);
+				mkdirSync(current, { mode: 0o700, recursive: index === 0 });
+				stat = lstatSync(current);
 			}
 			if (!stat.isDirectory() || stat.isSymbolicLink()) return;
 			if (process.platform !== "win32") {
 				if (stat.uid !== process.getuid?.()) return;
 				if (index === 0 && (stat.mode & 0o022) !== 0) return;
-				// The general .cache parent may already be public. Mountains' own
+				// The OS cache parent may already be public. Mountains' own
 				// subtree must be private; do not change permissions on existing dirs.
 				if (index > 0 && (stat.mode & 0o077) !== 0) return;
 			}

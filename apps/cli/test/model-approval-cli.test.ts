@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type MountainsConfig } from "../src/config.ts";
+import { isolatedEnv } from "./env.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const TASK = "Write marker.txt containing sudo in the temporary workspace.";
@@ -92,8 +93,7 @@ function cliFixture(t: TestContext) {
 			writeFileSync(path, JSON.stringify({ model: "deepseek-flash", apiKeyEnv: "MAIN_FIXTURE_KEY", maxTokens: 100,
 				checkpoints: false, retry: { maxAttempts: 1 }, limits: { maxCost: 1, maxRequests: 6, maxTurns: 4 }, ...overrides }));
 			// Deliberately exclude inherited provider credentials, proxies and NODE_OPTIONS.
-			const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: home,
-				MOUNTAINS_HOME: join(home, ".mountains"), MOUNTAINS_BUDGET_USD: "5", ...credentials };
+			const env: NodeJS.ProcessEnv = { ...isolatedEnv(home), MOUNTAINS_BUDGET_USD: "5", ...credentials };
 			const running = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
 				const child = spawn(process.execPath, [MAIN, "run", "--task", TASK, "--workspace", workspace, "--config", path,
 					"--out", out, "--json", "--run-id", "approval-cli-fixture", "--base-url", baseUrl, "--spend-ledger", spend],
