@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: macOS / Node ${{ matrix.node }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.19.0, 24.x]
+    env:
+      MOUNTAINS_PYTHON: python
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install ripgrep
+        run: command -v rg >/dev/null || brew install ripgrep
+      - name: Check required tools
+        run: |
+          node --version
+          npm --version
+          git --version
+          bash --version
+          rg --version
+          "$MOUNTAINS_PYTHON" --version
+      - run: npm ci
+      - run: npm run check

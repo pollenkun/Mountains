@@ -98,6 +98,8 @@ npm run mountains -- run --task "Fix add returning the wrong result" --workspace
 
 Mountains edits the files in `--workspace` directly. Run it in a directory under version control, or one you can throw away.
 
+`--workspace` sets the task directory; it is not an operating-system sandbox. Commands run with your user account's permissions and can read or modify files outside that directory and access the network. The default policy automatically allows ordinary commands, file changes and network access without asking each time. Run untrusted tasks in an isolated environment; a disposable directory alone does not protect other files on your computer.
+
 Check the code:
 
 ```bash
