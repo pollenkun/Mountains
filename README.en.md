@@ -77,28 +77,55 @@ Six tools: `query_plan` (search, list and read files in one call), `file_read`, 
 
 Requires Node.js 22.19 or later and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
 
-```bash
-npm install
-```
+The example below uses macOS and DeepSeek. Download the repository and install its dependencies:
 
 ```bash
-export DEEPSEEK_API_KEY=your-key
+git clone https://github.com/pollenkun/Mountains.git
+cd Mountains
+npm ci
+```
+
+Set your API key and cumulative spending cap. Replace `your-key` with your DeepSeek API key:
+
+```bash
+export DEEPSEEK_API_KEY="your-key"
 export MOUNTAINS_BUDGET=10
 ```
 
-`MOUNTAINS_BUDGET` caps the total spent across all runs (in CNY). The cap for each run goes in a config file, for example `config.json`:
-
-```json
-{ "billingCurrency": "CNY", "limits": { "maxCost": 2 } }
-```
+`MOUNTAINS_BUDGET` caps the total spent across all runs (in CNY). Create `config.json` to cap each run at 2 CNY:
 
 ```bash
-npm run mountains -- run --task "Fix add returning the wrong result" --workspace ./my-project --config config.json
+cat > config.json <<'JSON'
+{ "billingCurrency": "CNY", "limits": { "maxCost": 2 } }
+JSON
+```
+
+Create a disposable example directory. Its `add` function deliberately subtracts instead of adding:
+
+```bash
+mkdir demo-workspace
+cat > demo-workspace/add.cjs <<'JS'
+exports.add = (a, b) => a - b;
+JS
 ```
 
 Mountains edits the files in `--workspace` directly. Run it in a directory under version control, or one you can throw away.
 
 `--workspace` sets the task directory; it is not an operating-system sandbox. Commands run with your user account's permissions and can read or modify files outside that directory and access the network. The default policy automatically allows ordinary commands, file changes and network access without asking each time. Run untrusted tasks in an isolated environment; a disposable directory alone does not protect other files on your computer.
+
+Run the task. This step calls DeepSeek and incurs model charges:
+
+```bash
+npm run mountains -- run --task "Fix add in add.cjs so it returns the sum of two numbers" --workspace ./demo-workspace --config config.json
+```
+
+When it finishes, the terminal shows the result, estimated cost and recording directory. Check that the example was fixed:
+
+```bash
+node -e "require('node:assert/strict').equal(require('./demo-workspace/add.cjs').add(2, 3), 5); console.log('OK')"
+```
+
+An `OK` result means this example passes. For your own project, replace `--workspace` with its path and `--task` with your request. Run all the commands above from the Mountains repository directory.
 
 Check the code:
 

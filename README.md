@@ -77,28 +77,55 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 需要 Node.js 22.19 或更高版本，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。
 
-```bash
-npm install
-```
+以下以 macOS 和 DeepSeek 为例。先下载仓库并安装依赖：
 
 ```bash
-export DEEPSEEK_API_KEY=你的密钥
+git clone https://github.com/pollenkun/Mountains.git
+cd Mountains
+npm ci
+```
+
+设置密钥和累计费用上限。把 `你的密钥` 换成自己的 DeepSeek API 密钥：
+
+```bash
+export DEEPSEEK_API_KEY="你的密钥"
 export MOUNTAINS_BUDGET=10
 ```
 
-`MOUNTAINS_BUDGET` 是所有运行累计花费的上限（元）。每次运行的上限写在配置文件里，例如 `config.json`：
-
-```json
-{ "billingCurrency": "CNY", "limits": { "maxCost": 2 } }
-```
+`MOUNTAINS_BUDGET` 是所有运行累计花费的上限（元）。下面创建 `config.json`，把每次运行的上限设为 2 元：
 
 ```bash
-npm run mountains -- run --task "修复 add 返回错误结果的问题" --workspace ./my-project --config config.json
+cat > config.json <<'JSON'
+{ "billingCurrency": "CNY", "limits": { "maxCost": 2 } }
+JSON
+```
+
+先创建一个可以丢弃的示例目录。里面的 `add` 故意把加法写成了减法：
+
+```bash
+mkdir demo-workspace
+cat > demo-workspace/add.cjs <<'JS'
+exports.add = (a, b) => a - b;
+JS
 ```
 
 Mountains 会直接修改 `--workspace` 里的文件，请在有版本管理或可以丢弃的目录里运行。
 
 `--workspace` 只是任务目录，不是系统级隔离。命令以当前用户权限运行，可能读取或修改目录外的文件，也可能访问网络。默认规则会自动允许一般命令、文件修改和网络访问，不会逐项询问。请在隔离环境中运行不可信任务；仅使用一个可以丢弃的目录，不能保护电脑上的其他文件。
+
+运行任务。这一步会调用 DeepSeek，并产生模型费用：
+
+```bash
+npm run mountains -- run --task "修复 add.cjs 中的 add，让它返回两个数的和" --workspace ./demo-workspace --config config.json
+```
+
+结束后，终端会显示任务结果、估算费用和记录目录。可以检查加法是否修好了：
+
+```bash
+node -e "require('node:assert/strict').equal(require('./demo-workspace/add.cjs').add(2, 3), 5); console.log('OK')"
+```
+
+输出 `OK` 表示这个例子通过。处理自己的项目时，把 `--workspace` 换成项目路径，把 `--task` 换成任务描述。以上命令都在 Mountains 仓库目录中执行。
 
 检查代码：
 
