@@ -76,7 +76,7 @@ function usageFor(profile: ApprovalChatProfile, raw: RawUsage | null): Usage {
 		})()
 		: normalizeUsage(profile, raw);
 	if (Object.entries(u).some(([key, value]) => key !== "partial" && value !== null && !token(value))) return { ...UNKNOWN_USAGE };
-	u.partial = u.input === null || u.cacheRead === null || u.output === null || usageInconsistency(u) !== null
+	u.partial = u.partial || u.input === null || u.cacheRead === null || u.output === null || usageInconsistency(u) !== null
 		|| (u.reasoning !== null && u.output !== null && u.reasoning > u.output);
 	return u;
 }

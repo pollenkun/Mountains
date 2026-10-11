@@ -212,13 +212,13 @@ export interface CostEstimate {
 export function costOfUsage(pricing: ModelPricing, u: Usage, promptTokens: number | null, at: Date): CostEstimate {
 	const period: PricePeriod = pricing.timeOfDay ? (isPeak(at, pricing.holidayCalendar) ? "peak" : "off-peak") : "flat";
 	const r = period === "off-peak" ? pricing.offPeak : pricing.peak;
-	let partial = false;
+	let partial = u.partial;
 	let input: number;
-	if (u.input !== null && u.cacheRead !== null) {
+	if (!u.partial && u.input !== null && u.cacheRead !== null) {
 		input = u.input * r.cacheMiss + u.cacheRead * r.cacheHit + (u.cacheWrite ?? 0) * (r.cacheWrite ?? r.cacheMiss);
 	} else {
 		partial = true;
-		input = (promptTokens ?? 0) * Math.max(r.cacheMiss, r.cacheWrite ?? 0);
+		input = Math.max(promptTokens ?? 0, (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0)) * Math.max(r.cacheMiss, r.cacheWrite ?? 0);
 	}
 	if (u.output === null) partial = true;
 	const amount = (input + (u.output ?? 0) * r.output) / 1e6;

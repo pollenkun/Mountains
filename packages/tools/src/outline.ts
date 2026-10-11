@@ -1,18 +1,20 @@
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
+import { readRegularFile } from "./regular-file.ts";
+import { truncateUtf16 } from "./text.ts";
 import { extname } from "node:path";
 import type { ToolContext, ToolDefinition, ToolResult } from "./types.ts";
 import { sha256, ToolError } from "./workspace.ts";
 
 /** 各语言的“定义行”识别规则（只做轻量正则，不做完整解析） */
 const RULES: { exts: string[]; re: RegExp }[] = [
-	{ exts: [".py", ".pyi"], re: /^\s*(?:async\s+def|def|class)\s+[A-Za-z_]\w*/ },
+	{ exts: [".py", ".pyi"], re: /^\s*(?:async\s+def|def|class)\s+[_\p{ID_Start}][_\p{ID_Continue}]*/u },
 	{
 		exts: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
-		re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|namespace)\s+[A-Za-z_$][\w$]*|^\s*(?:public|private|protected|static|readonly|async|get|set|\s)*[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?::\s*[^{=]+)?\{\s*$/,
+		re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|namespace)\s+[A-Za-z_$][\w$]*|^\s*(?:(?:public|private|protected|static|readonly|async|get|set)\s+)*[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?::\s*[^{=]+)?\{\s*$/,
 	},
 	{ exts: [".go"], re: /^\s*(?:func|type)\s+/ },
 	{ exts: [".rs"], re: /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|mod)\b/ },
-	{ exts: [".java", ".kt", ".cs"], re: /^\s*(?:public|private|protected|internal|static|final|abstract|override|open|\s)*(?:class|interface|enum|record|fun|void|[A-Z][\w<>,\s]*)\s+[A-Za-z_]\w*\s*[({]/ },
+	{ exts: [".java", ".kt", ".cs"], re: /^\s*(?:(?:public|private|protected|internal|static|final|abstract|override|open)\s+)*(?:class|interface|enum|record|fun|void|[A-Z][\w<>,]*(?:\s+[\w<>,]+)*)\s+[A-Za-z_]\w*\s*[({]/ },
 ];
 
 const MAX_ENTRIES = 400;
@@ -25,7 +27,8 @@ export function outlineLines(path: string, text: string): { line: number; text: 
 	const lines = text.split(/\r?\n/);
 	for (let i = 0; i < lines.length; i++) {
 		const l = lines[i] ?? "";
-		if (rule.re.test(l)) out.push({ line: i + 1, text: l.length > MAX_LINE ? `${l.slice(0, MAX_LINE)}…` : l.replace(/\s+$/, "") });
+		// Trim indentation once so regex alternatives never compete for long whitespace.
+		if (rule.re.test(l.trimStart())) out.push({ line: i + 1, text: l.length > MAX_LINE ? `${truncateUtf16(l, MAX_LINE)}…` : l.replace(/\s+$/, "") });
 	}
 	return out;
 }
@@ -53,7 +56,7 @@ export function createOutlineTool(): ToolDefinition {
 				if (typeof args.path !== "string") throw new ToolError("path 必须是字符串");
 				const { abs, rel } = ctx.workspace.resolve(args.path);
 				if (statSync(abs).isDirectory()) throw new ToolError(`${rel} 是目录，请用 file_glob 列出文件`);
-				const buf = readFileSync(abs);
+				const buf = readRegularFile(abs);
 				const text = buf.toString("utf8");
 				const total = text.split(/\r?\n/).length - (text.endsWith("\n") ? 1 : 0);
 				const hash = sha256(buf);

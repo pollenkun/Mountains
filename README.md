@@ -160,7 +160,7 @@ macOS 和没有可用用户级 systemd 的 Linux 只能尽力清理。结果会�
 
 ### 记录和费用
 
-运行记录、回放、归档和费用账本默认放在主目录的 `.mountains` 下，Windows 是 `%USERPROFILE%\.mountains`。设置 `MOUNTAINS_HOME` 可以换目录。配置文件或 `--spend-ledger` 指定的账本路径优先。
+运行记录、回放、归档和费用账本默认放在主目录的 `.mountains` 下，Windows 是 `%USERPROFILE%\.mountains`。设置 `MOUNTAINS_HOME` 可以换目录。配置文件或 `--spend-ledger` 指定的账本路径优先。运行输出、费用账本、检查点和归档目录必须放在任务工作区之外。
 
 以前的 `MOUNTAINS_HOME` 只改归档位置。这次也会改默认账本位置。如果旧的 `~/.mountains/spend.jsonl` 还在、新目录没有账本，CLI 会先停下来。把旧账本搬过去，或用 `--spend-ledger` 继续用原路径，累计费用就不会从零开始。
 

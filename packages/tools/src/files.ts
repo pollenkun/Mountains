@@ -1,8 +1,11 @@
+import { waitForApproval } from "./approval-wait.ts";
 import { isUtf8 } from "node:buffer";
+import { readRegularFile } from "./regular-file.ts";
+import { truncateUtf16 } from "./text.ts";
 import { outlineLines } from "./outline.ts";
 import { buildEditFeedback } from "./edit-feedback.ts";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ToolContext, ToolDefinition, ToolResult } from "./types.ts";
 import { sha256, ToolError } from "./workspace.ts";
@@ -36,15 +39,12 @@ export interface ReadLimits {
 
 const OUTLINE_MAX = 120;
 
-function escapeRe(s: string): string {
-	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function indentOf(line: string): number {
 	return (/^[ \t]*/.exec(line)?.[0] ?? "").replace(/\t/g, "    ").length;
 }
 
-const PY_DEF_RE = /^[ \t]*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/;
+const PY_DEF_RE = /^[ \t]*(?:async\s+)?(def|class)\s+([_\p{ID_Start}][_\p{ID_Continue}]*)/u;
+interface PythonSymbolRange { start: number; end: number; declaration: number; kind: "def" | "class" }
 
 /**
  * Python 逻辑行：starts[i] 为 true 表示第 i 行开始一个新的逻辑行。
@@ -113,18 +113,18 @@ export function pythonLogicalStarts(lines: string[]): boolean[] {
  * symbol 可写成 Outer.Inner.name，此时要求匹配完整的父定义后缀。
  * 块在第一个缩进不大于定义行的逻辑行之前结束；括号内和字符串内的续行不论缩进都属于当前块。
  */
-export function findSymbol(lines: string[], symbol: string): { start: number; end: number }[] {
+function findPythonSymbols(lines: string[], symbol: string): PythonSymbolRange[] {
 	const parts = symbol.split(".").filter(Boolean);
 	const name = parts[parts.length - 1];
 	const parents = parts.slice(0, -1);
 	if (!name) return [];
-	const re = new RegExp(`^[ \\t]*(?:async\\s+)?(?:def|class)\\s+${escapeRe(name)}\\b`);
 	const starts = pythonLogicalStarts(lines);
 	const at = (k: number) => lines[k] ?? "";
 	const blankOrComment = (l: string) => l.trim() === "" || /^[ \t]*#/.test(l);
-	const out: { start: number; end: number }[] = [];
+	const out: PythonSymbolRange[] = [];
 	lines.forEach((line, i) => {
-		if (!starts[i] || !re.test(line)) return;
+		const declaration = PY_DEF_RE.exec(line);
+		if (!starts[i] || declaration?.[2] !== name) return;
 		const ind = indentOf(line);
 		if (parents.length > 0) {
 			let cur = ind;
@@ -132,7 +132,7 @@ export function findSymbol(lines: string[], symbol: string): { start: number; en
 			for (let j = i - 1; j >= 0 && cur > 0; j--) {
 				if (!starts[j] || blankOrComment(at(j)) || indentOf(at(j)) >= cur) continue;
 				const m = PY_DEF_RE.exec(at(j));
-				if (m?.[1]) ancestors.unshift(m[1]);
+				if (m?.[2]) ancestors.unshift(m[2]);
 				cur = indentOf(at(j));
 			}
 			if (parents.length > ancestors.length || parents.some((p, k) => p !== ancestors[ancestors.length - parents.length + k])) return;
@@ -160,10 +160,17 @@ export function findSymbol(lines: string[], symbol: string): { start: number; en
 			}
 			end = k;
 		}
-		out.push({ start: start + 1, end: end + 1 });
+		out.push({ start: start + 1, end: end + 1, declaration: i + 1, kind: declaration[1] as "def" | "class" });
 	});
 	return out;
 }
+
+export function findSymbol(lines: string[], symbol: string): { start: number; end: number }[] {
+	return findPythonSymbols(lines, symbol).map(({ start, end }) => ({ start, end }));
+}
+
+/** Keep ordinary read responses below the session archive's 8 MiB record ceiling. */
+export const MAX_READ_OUTPUT_BYTES = 1024 * 1024;
 
 export const DEFAULT_READ_LIMITS: ReadLimits = { defaultLines: 2000, maxLines: 2000, maxLineChars: 2000, dedupe: false };
 
@@ -222,19 +229,19 @@ export function atomicWrite(abs: string, data: string | Buffer, expectedHash?: s
 	const tmp = `${abs}.mountains-${process.pid}-${randomUUID()}.tmp`;
 	let created = false;
 	try {
-		const fd = openSync(tmp, "wx");
+		const fd = openSync(tmp, "wx", 0o600);
 		created = true;
 		try { writeFileSync(fd, data); }
 		finally { closeSync(fd); }
-		if (existsSync(abs)) chmodSync(tmp, statSync(abs).mode);
 		// Recheck after checkpoint/temporary-file work, immediately before the only commit.
 		// Portable filesystems do not offer compare-and-swap rename against arbitrary external writers.
 		if (expectedHash === null && lstatSync(abs, { throwIfNoEntry: false }) !== undefined) {
 			throw new ToolError("文件在验证后、提交前已出现，拒绝覆盖，请重新读取");
 		}
-		if (expectedHash !== undefined && expectedHash !== null && (lstatSync(abs).isSymbolicLink() || sha256(readFileSync(abs)) !== expectedHash)) {
+		if (expectedHash !== undefined && expectedHash !== null && (lstatSync(abs).isSymbolicLink() || sha256(readRegularFile(abs)) !== expectedHash)) {
 			throw new ToolError("文件在验证后、提交前已改变，请重新读取");
 		}
+		chmodSync(tmp, existsSync(abs) ? statSync(abs).mode : 0o666 & ~process.umask());
 		renameSync(tmp, abs);
 	} finally {
 		if (created && existsSync(tmp)) unlinkSync(tmp);
@@ -252,7 +259,7 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 		logicalName: "file.read",
 		readOnly: true,
 		description:
-			`Read a UTF-8 text file in the workspace. Returns ${limits.lineNumbers === "sparse" ? "lines with a line number on the first line and every 10th line" : "numbered lines"}. You decide how much to read: without startLine/endLine it returns ${limits.defaultLines >= limits.maxLines ? "the whole file" : `the first ${limits.defaultLines} lines`} (at most ${limits.maxLines} lines per call). Read small files whole; for a large file, locate the code first (${recovery.queryPlan ? "query_plan search" : "content_search"}), then read the part you need with startLine/endLine. ` +
+			`Read a UTF-8 text file in the workspace. Returns ${limits.lineNumbers === "sparse" ? "lines with a line number on the first line and every 10th line" : "numbered lines"}. You decide how much to read: without startLine/endLine it returns ${limits.defaultLines >= limits.maxLines ? "the whole file" : `the first ${limits.defaultLines} lines`} (at most ${limits.maxLines} lines and ${MAX_READ_OUTPUT_BYTES} UTF-8 output bytes per call). Read small files whole; for a large file, locate the code first (${recovery.queryPlan ? "query_plan search" : "content_search"}), then read the part you need with startLine/endLine. ` +
 			(limits.outlineFirst ? `Called without startLine/endLine on a source file longer than ${limits.outlineFirst} lines, it returns the file's outline (definitions with line numbers) instead of its first lines; then read just the range you need. ` : "") +
 			(limits.symbols && limits.classOutlineOver ? `A class longer than ${limits.classOutlineOver} lines read by symbol returns its structure (methods with line numbers); pass full=true for the whole class. ` : "") +
 			(limits.symbols ? "To read a Python function or class, pass symbol (e.g. parse or MyClass.method) instead of a line range. Uses lexical boundaries, not a full Python parser; if unsupported, use startLine/endLine. The same size limits apply; incomplete definitions include a continuation range. " : "") +
@@ -275,16 +282,16 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 			try {
 				const { abs, rel } = ctx.workspace.resolve(str(args.path, "path"));
 				if (statSync(abs).isDirectory()) return fail(`${rel} 是目录，请用 ${recovery.queryPlan ? "query_plan 的 glob 步骤" : "file_glob"} 列出文件`);
-				const buf = readFileSync(abs);
+				const buf = readRegularFile(abs);
 				if (isBinary(buf)) return fail(`${rel} 是二进制文件，拒绝读取`, { path: rel, bytes: buf.length });
 				const hash = sha256(buf);
 				ctx.files.record(rel, hash);
 				const { lines, eol } = splitLines(buf.toString("utf8"));
 				const total = lines.length;
-				let symbolRange: { start: number; end: number } | null = null;
+				let symbolRange: PythonSymbolRange | null = null;
 				if (limits.symbols && typeof args.symbol === "string" && args.symbol.trim() && args.startLine === undefined && args.endLine === undefined) {
 					if (!/\.pyi?$/.test(rel)) return fail(`symbol 只支持 Python 文件（.py、.pyi）；读取 ${rel} 请用 startLine/endLine`);
-					const found = findSymbol(lines, args.symbol.trim());
+					const found = findPythonSymbols(lines, args.symbol.trim());
 					if (found.length === 0) return fail(`${rel} 中没有名为 ${args.symbol} 的函数或类定义`);
 					if (found.length > 1) return fail(`${rel} 中有 ${found.length} 处 ${args.symbol} 定义（第 ${found.map((f) => f.start).join("、")} 行）：用 Outer.name 或 startLine/endLine 指定`);
 					symbolRange = found[0] ?? null;
@@ -302,12 +309,15 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 						};
 					}
 				}
-				if (symbolRange && limits.classOutlineOver && limits.classOutlineOver > 0 && args.full !== true && /^\s*class\s/.test(lines[symbolRange.start - 1] ?? "") && symbolRange.end - symbolRange.start + 1 > limits.classOutlineOver) {
-					const indent = indentOf(lines[symbolRange.start - 1] ?? "");
-					const members = outlineLines(rel, lines.join("\n")).filter((e) => e.line > symbolRange!.start && e.line <= symbolRange!.end && indentOf(e.text) > indent);
+				if (symbolRange && limits.classOutlineOver && limits.classOutlineOver > 0 && args.full !== true && symbolRange.kind === "class" && symbolRange.end - symbolRange.start + 1 > limits.classOutlineOver) {
+					const indent = indentOf(lines[symbolRange.declaration - 1] ?? "");
+					const members = outlineLines(rel, lines.join("\n")).filter((e) => e.line > symbolRange!.declaration && e.line <= symbolRange!.end && indentOf(e.text) > indent);
+					const shown = members.slice(0, OUTLINE_MAX);
+					const declaration = lines[symbolRange.declaration - 1] ?? "";
+					const declarationText = declaration.length > 160 ? `${truncateUtf16(declaration, 160)}…` : declaration;
 					return {
 						ok: true,
-						modelContent: [`${rel} | class ${String(args.symbol)} lines ${symbolRange.start}-${symbolRange.end} (${symbolRange.end - symbolRange.start + 1} lines) | structure only; read a method with symbol=${String(args.symbol)}.name, a range with startLine/endLine, or the whole class with full=true`, `${symbolRange.start}\t${lines[symbolRange.start - 1]}`, ...members.map((e) => `${e.line}\t${e.text}`)].join("\n"),
+						modelContent: [`${rel} | class ${String(args.symbol)} lines ${symbolRange.start}-${symbolRange.end} (${symbolRange.end - symbolRange.start + 1} lines) | structure only; read a method with symbol=${String(args.symbol)}.name, a range with startLine/endLine, or the whole class with full=true`, `${symbolRange.declaration}\t${declarationText}`, ...shown.map((e) => `${e.line}\t${e.text}`), ...(members.length > shown.length ? [`… ${members.length - shown.length} more members; read a range to see them`] : [])].join("\n"),
 						summary: `${rel} 类 ${String(args.symbol)} 共 ${symbolRange.end - symbolRange.start + 1} 行，返回结构 ${members.length} 项`,
 						details: { path: rel, totalLines: total, hash, classOutline: true, symbolStart: symbolRange.start, symbolEnd: symbolRange.end, members: members.length },
 					};
@@ -317,8 +327,8 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 				let end = symbolRange?.end ?? num(args.endLine, "endLine") ?? start + limits.defaultLines - 1;
 				if (end < start) return fail("endLine 不能小于 startLine");
 				end = Math.min(end, start + limits.maxLines - 1, total);
-				const symbolTruncated = symbolRange !== null && end < symbolRange.end;
-				const symbolContinuation = symbolTruncated ? ` | symbol incomplete: startLine=${end + 1} endLine=${symbolRange?.end}` : "";
+				let symbolTruncated = symbolRange !== null && end < symbolRange.end;
+				let symbolContinuation = symbolTruncated ? ` | symbol incomplete: startLine=${end + 1} endLine=${symbolRange?.end}` : "";
 				if (limits.dedupe && args.force !== true && total > 0 && ctx.files.isDelivered(rel, hash, start, end)) {
 					return {
 						ok: true,
@@ -330,27 +340,40 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 				const out: string[] = [];
 				let longLines = 0;
 				const invalidUtf8 = !isUtf8(buf);
-				const needsArchive = start > 1 || end < total || invalidUtf8 || lines.slice(Math.max(0, start - 1), end).some((line) => line.length > limits.maxLineChars);
+				// Leave bounded room for the header, archive reference and recovery/error notes.
+				// Only complete formatted source rows enter the response and its read receipt.
+				const rowBudget = MAX_READ_OUTPUT_BYTES - Buffer.byteLength(rel) - 8192;
+				let rowBytes = 0;
+				let outputTruncated = false;
+				for (let i = start; i <= end; i++) {
+					let line = lines[i - 1] ?? "";
+					const clipped = line.length > limits.maxLineChars;
+					if (clipped) line = `${truncateUtf16(line, limits.maxLineChars)}…[此行共 ${line.length} 字符，已截断]`;
+					const row = limits.lineNumbers === "sparse" && i !== start && i % 10 !== 0 ? line : `${i}\t${line}`;
+					const bytes = Buffer.byteLength(row) + 1;
+					if (rowBytes + bytes > rowBudget) {
+						if (!out.length) return fail("此行超过单次读取输出字节上限，请使用更小的 maxLineChars 配置", { path: rel });
+						end = i - 1; outputTruncated = true; break;
+					}
+					rowBytes += bytes; out.push(row);
+					if (clipped) longLines++;
+				}
+				symbolTruncated = symbolRange !== null && end < symbolRange.end;
+				symbolContinuation = symbolTruncated ? ` | symbol incomplete: startLine=${end + 1} endLine=${symbolRange?.end}` : "";
+				const needsArchive = start > 1 || end < total || invalidUtf8 || longLines > 0;
 				let fullOutputRef: string | undefined;
 				let archiveError: string | undefined;
 				if (needsArchive) {
 					try {
 						if (!ctx.blobs) throw new ToolError("未配置原文存储");
 						fullOutputRef = ctx.blobs.put(buf, { kind: "raw", source: { tool: "file_read", path: rel, toolCallId: ctx.toolCallId } });
-					} catch (err) { archiveError = String(err).slice(0, 200); }
-				}
-				for (let i = start; i <= end; i++) {
-					let line = lines[i - 1] ?? "";
-					if (line.length > limits.maxLineChars) {
-						longLines++;
-						line = `${line.slice(0, limits.maxLineChars)}…[此行共 ${line.length} 字符，已截断]`;
-					}
-					out.push(limits.lineNumbers === "sparse" && i !== start && i % 10 !== 0 ? line : `${i}\t${line}`);
+					} catch (err) { archiveError = truncateUtf16(String(err), 200); }
 				}
 				const truncated = start > 1 || end < total || longLines > 0;
 				const header =
 					`${rel} | lines ${total === 0 ? 0 : start}-${end} of ${total}${hashNote(hash)}` +
 					(eol === "\r\n" ? " | CRLF" : "") +
+					(outputTruncated ? " | output byte limit reached" : "") +
 					(symbolContinuation || (end < total ? ` | more: startLine=${end + 1}` : "")) +
 					(invalidUtf8 ? " | invalid UTF-8: displayed text is lossy" : "") +
 					(fullOutputRef && !(recovery.lean && !recovery.contextExpand) ? ` | fullOutputRef=${fullOutputRef} (${recovery.contextExpand ? "context_expand can recover this exact version" : "audit only"})` : "") +
@@ -367,12 +390,13 @@ export function createReadTool(limits: ReadLimits = DEFAULT_READ_LIMITS, recover
 						}
 					}
 				}
+				if (Buffer.byteLength(modelContent) > MAX_READ_OUTPUT_BYTES) throw new ToolError("File read output exceeds byte limit");
 				if (!ctx.deferReadPublication) for (const range of publishedRanges) ctx.files.markDelivered(rel, hash, range.start, range.end);
 				return {
 					ok: true,
 					modelContent,
 					summary: partialDedupe ? `查看 ${rel} 第 ${start}-${end} 行中尚未展示的部分（共 ${total} 行）` : `查看 ${rel} 第 ${start}-${end} 行（共 ${total} 行）`,
-					details: { path: rel, ...(partialDedupe ? { requestedStartLine: start, requestedEndLine: end, partialDedupe: true } : { startLine: start, endLine: end }), totalLines: total, hash, truncated, longLines, eol, invalidUtf8, ...(archiveError ? { archiveError } : {}), ...(symbolRange ? { symbolEndLine: symbolRange.end, symbolTruncated } : {}) },
+					details: { path: rel, ...(partialDedupe ? { requestedStartLine: start, requestedEndLine: end, partialDedupe: true } : { startLine: start, endLine: end }), totalLines: total, hash, truncated, outputTruncated, longLines, eol, invalidUtf8, ...(archiveError ? { archiveError } : {}), ...(symbolRange ? { symbolEndLine: symbolRange.end, symbolTruncated } : {}) },
 					reads: publishedRanges.map(range => ({ path: rel, startLine: range.start, endLine: range.end, totalLines: total, hash })),
 					...(fullOutputRef ? { fullOutputRef } : {}),
 				};
@@ -392,7 +416,7 @@ function hashMatches(expected: string, actual: string): boolean {
 async function approveFileWrite(tool: string, args: Record<string, unknown>, path: string, explanation: string, ctx: ToolContext): Promise<ToolResult | null> {
 	const request = { toolCallId: ctx.toolCallId, command: `${tool} ${JSON.stringify(args, null, 2)}`, cwd: ".", risk: "workspace-write" as const, explanation };
 	if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path, cancelled: true });
-	const decision = await ctx.approve(request);
+	const decision = await waitForApproval(ctx, request);
 	if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path, cancelled: true });
 	if (decision !== "allow") return fail(`写文件未获批准：${path}`, { path, approved: false });
 	return null;
@@ -440,7 +464,7 @@ export function createEditTool(options: { batch?: boolean; lean?: boolean; appro
 					if (!oldText) throw new ToolError("oldText 不能为空；插入请提供相邻原文，新建文件请用 file_write");
 					return { oldText, newText: str(entry.newText, "newText"), expectedMatches: num(entry.expectedMatches, "expectedMatches") ?? 1 };
 				});
-				const buf = readFileSync(abs);
+				const buf = readRegularFile(abs);
 				if (isBinary(buf)) return fail(`${rel} 是二进制文件`);
 				if (!isUtf8(buf)) return fail(`${rel} 不是有效 UTF-8，拒绝修改以免损坏原始字节`);
 				const before = sha256(buf);
@@ -536,7 +560,7 @@ export function createWriteTool(options: { lean?: boolean; approveFileWrites?: b
 				let beforeLines = 0;
 				if (existsSync(abs)) {
 					if (statSync(abs).isDirectory()) return fail(`${rel} 是目录`);
-					const buf = readFileSync(abs);
+					const buf = readRegularFile(abs);
 					before = sha256(buf);
 					if (createOnly) return fail(`${rel} 已存在；覆盖需设置 createOnly=false 并提供 expectedHash`, { path: rel, currentHash: before });
 					const expected = typeof args.expectedHash === "string" ? args.expectedHash : undefined;
@@ -552,12 +576,10 @@ export function createWriteTool(options: { lean?: boolean; approveFileWrites?: b
 					if (rejected) return rejected;
 				}
 				await ctx.beforeWrite?.(abs);
-				if (options.approveFileWrites) {
-					if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path: rel, cancelled: true });
-					if (ctx.workspace.resolve(rel, { forWrite: true }).abs !== abs) return fail("文件路径在验证后已改变，请重新读取", { path: rel });
-				}
+				if (ctx.signal.aborted) return fail("写文件已取消，文件未修改", { path: rel, cancelled: true });
+				if (ctx.workspace.resolve(rel, { forWrite: true }).abs !== abs) return fail("文件路径在验证后已改变，请重新读取", { path: rel });
 				ctx.assertExecutionAllowed?.();
-				atomicWrite(abs, content, options.approveFileWrites ? before : undefined);
+				atomicWrite(abs, content, before);
 				const after = sha256(content);
 				ctx.files.record(rel, after);
 				return {

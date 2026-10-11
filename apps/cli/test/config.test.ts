@@ -61,3 +61,19 @@ test("explicit ledger configuration is recorded without changing default config 
 		assert.equal(explicit.sha256, implicit.sha256);
 	}
 });
+
+
+test("malformed numeric limits and retry settings cannot silently disable protections", () => {
+	for (const section of ["limits", "retry"] as const) {
+		const keys = section === "limits" ? ["maxTurns", "maxInputTokens", "maxOutputTokens"] : ["maxAttempts"];
+		for (const key of keys) for (const value of ["disabled", null, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			assert.throws(() => loadConfig(null, { [section]: { [key]: value } } as never), new RegExp(`${section}\\.${key}`));
+		}
+	}
+	for (const value of ["disabled", null, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => loadConfig(null, { maxTokens: value } as never), /maxTokens/);
+	for (const [section, key] of [["limits", "maxCost"], ["retry", "baseDelayMs"], ["retry", "maxDelayMs"]]) {
+		for (const value of ["disabled", null, -1, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => loadConfig(null, { [section!]: { [key!]: value } } as never), new RegExp(`${section}\\.${key}`));
+	}
+	assert.equal(loadConfig(null, { limits: { maxCost: 0 } as never }).config.limits.maxCost, 0);
+	assert.equal(loadConfig(null, { retry: { baseDelayMs: 0, maxDelayMs: 0 } as never }).config.retry.baseDelayMs, 0);
+});

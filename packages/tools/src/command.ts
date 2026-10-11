@@ -1,6 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import type { Risk, ToolDefinition, ToolResult } from "./types.ts";
+import { truncateUtf16, truncateUtf16Tail } from "./text.ts";
+import { waitForApproval } from "./approval-wait.ts";
 import { isValidUtf8, sha256, ToolError } from "./workspace.ts";
 import { findWindowsGitBash, nativeWindowsCommandHost, type WindowsCommandHost } from "./windows-command.ts";
 import { probeLinuxScope, spawnLinuxScope, type LinuxScopeHost, type LinuxScopeProcess } from "./linux-scope.ts";
@@ -41,15 +43,66 @@ export function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	return out;
 }
 
-const READ_ONLY = /^(ls|cat|head|tail|wc|grep|rg|find|pwd|echo|tree|stat|file|diff|git\s+(status|diff|log|show|branch|rev-parse|ls-files|blame))\b/;
+/** Only options whose behavior we understand may inherit read-only approval. Unknown
+ * programs/options stay conservative. In particular git may run configured helpers,
+ * rg may load a config with --pre, find can execute/delete, and file can compile magic.
+ * This is an approval hint, not a sandbox or a guarantee about a replaced executable. */
+const READ_ONLY_OPTIONS: Record<string, { short: string; flags?: string; values?: string }> = {
+	pwd: { short: "LP", flags: "--logical --physical --help --version" },
+	ls: { short: "aAbBcCdDfFgGhHiIklLmNnOpqQrRsStTuUvwxX1", flags: "--all --almost-all --author --classify --directory --file-type --full-time --group-directories-first --human-readable --inode --literal --numeric-uid-gid --quote-name --recursive --reverse --size --help --version", values: "--block-size --color --format --hide --ignore --indicator-style --quoting-style --sort --tabsize --time --time-style --width -I -T -w" },
+	cat: { short: "AbEnsTuvet", flags: "--show-all --number-nonblank --show-ends --number --squeeze-blank --show-tabs --show-nonprinting --help --version" },
+	head: { short: "qvz", flags: "--quiet --silent --verbose --zero-terminated --help --version", values: "-c -n --bytes --lines" },
+	tail: { short: "fFqvz", flags: "--retry --quiet --silent --verbose --zero-terminated --help --version", values: "-c -n -s --bytes --lines --follow --pid --sleep-interval --max-unchanged-stats" },
+	wc: { short: "clLmw", flags: "--bytes --chars --lines --max-line-length --words --help --version", values: "--files0-from" },
+	grep: { short: "aAbBcEFGHhiILlnoPqRrsUVvwxyzZ", flags: "--extended-regexp --fixed-strings --basic-regexp --perl-regexp --ignore-case --no-ignore-case --invert-match --word-regexp --line-regexp --null-data --no-messages --no-filename --with-filename --line-number --byte-offset --text --binary --recursive --dereference-recursive --files-without-match --files-with-matches --count --only-matching --quiet --silent --line-buffered --null --help --version", values: "-e -f -m -A -B -C -D --regexp --file --max-count --after-context --before-context --context --binary-files --devices --directories --exclude --exclude-from --exclude-dir --include --label --color --colour --group-separator" },
+	rg: { short: "abcFhiIlLnNoPqsSUuvwx0", flags: "--no-config --fixed-strings --ignore-case --case-sensitive --smart-case --invert-match --word-regexp --line-regexp --text --binary --no-ignore --hidden --files --files-with-matches --files-without-match --count --count-matches --only-matching --quiet --line-number --no-line-number --with-filename --no-filename --heading --no-heading --line-buffered --null --null-data --multiline --multiline-dotall --no-unicode --help --version", values: "-e -f -g -t -T -m -A -B -C -E -M -r --max-columns --regexp --file --glob --iglob --type --type-not --max-count --after-context --before-context --context --max-depth --max-filesize --color --colors --sort --sortr --encoding --replace" },
+	find: { short: "", flags: "-H -L -P -O0 -O1 -O2 -O3 -print -print0 -ls -true -false -empty -readable -writable -executable -nouser -nogroup -prune -quit -a -and -o -or -not -xdev -mount -depth -daystart -follow -noleaf -warn -nowarn --help --version", values: "-name -iname -path -ipath -wholename -iwholename -regex -iregex -regextype -type -xtype -maxdepth -mindepth -mtime -mmin -atime -amin -ctime -cmin -size -user -group -uid -gid -perm -newer -anewer -cnewer -inum -links" },
+	stat: { short: "fLt", flags: "--dereference --file-system --terse --help --version", values: "-c --format --printf --cached" },
+	file: { short: "bEhikLNnrsv0", flags: "--brief --dereference --no-dereference --keep-going --mime --mime-type --mime-encoding --no-buffer --raw --special-files --help --version", values: "-e -f -F -m --exclude --files-from --separator --magic-file --parameter" },
+	tree: { short: "aCdDfFgilnNpqrsuX", flags: "--dirsfirst --inodes --noreport --prune --help --version", values: "-H -L -P -I --charset --sort --filelimit" },
+	diff: { short: "abBcdeEfHinpqrsStTuUwy", flags: "--brief --context --ed --expand-tabs --ignore-all-space --ignore-blank-lines --ignore-case --ignore-space-change --ignore-tab-expansion --minimal --new-file --normal --recursive --report-identical-files --side-by-side --speed-large-files --strip-trailing-cr --suppress-common-lines --text --unidirectional-new-file --unified --help --version", values: "-C -D -F -I -S -U -W -x -X --exclude --exclude-from --ignore-matching-lines --label --starting-file --width" },
+};
+
+function readOnlyArgv(argv: readonly string[]): boolean {
+	const [program, ...args] = argv;
+	if (program === "echo") return true; // argv literals never undergo shell expansion.
+	const spec = program === undefined || !Object.hasOwn(READ_ONLY_OPTIONS, program) ? undefined : READ_ONLY_OPTIONS[program];
+	if (!spec) return false;
+	let noConfig = false;
+	const flags = new Set((spec.flags ?? "").split(" "));
+	const values = new Set((spec.values ?? "").split(" "));
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]!;
+		if (arg === "--") return program !== "find" && (program !== "rg" || noConfig);
+		if (!arg.startsWith("-") || arg === "-") continue;
+		if (values.has(arg)) { if (++i >= args.length) return false; continue; }
+		if (flags.has(arg)) { if (arg === "--no-config") noConfig = true; continue; }
+		if (arg.startsWith("--")) {
+			const equal = arg.indexOf("=");
+			if (equal > 2 && values.has(arg.slice(0, equal))) continue;
+			return false;
+		}
+		let known = arg.length > 1;
+		for (let j = 1; j < arg.length; j++) {
+			const flag = arg[j]!;
+			if (values.has(`-${flag}`)) { if (j === arg.length - 1 && ++i >= args.length) known = false; break; }
+			if (!spec.short.includes(flag)) { known = false; break; }
+		}
+		if (!known) return false;
+	}
+	return program !== "rg" || noConfig;
+}
 const NETWORK = /\b(curl|wget|pip3?\s+install|npm\s+(install|i|ci)\b|pnpm\s+(install|add)|yarn\s+(install|add)|apt(-get)?\s+install|git\s+(clone|fetch|pull|push))\b/;
 const DANGEROUS = /(\brm\s+-[a-z]*r[a-z]*f?\b.*(\/|~)(\s|$)|\bsudo\b|\bmkfs\b|\bdd\s+if=|:\(\)\s*\{|\bchmod\s+-R\s+777\b|\bgit\s+push\s+.*--force\b|>\s*\/dev\/sd)/;
 
-export function classifyRisk(command: string): Risk {
-	const c = command.trim();
+export function classifyRisk(command: string | readonly string[]): Risk {
+	const c = typeof command === "string" ? command.trim() : command.join(" ");
 	if (DANGEROUS.test(c)) return "dangerous";
 	if (NETWORK.test(c)) return "network";
-	if (READ_ONLY.test(c) && !/[>|;&]/.test(c)) return "read-only";
+	// Shell parsing is deliberately narrow: quotes, escapes, expansions, redirects,
+	// command separators, newlines and unknown syntax require write approval.
+	const argv = typeof command === "string" ? /^[\w./@%+,:= -]+$/.test(c) ? c.split(/ +/) : undefined : command;
+	if (argv && readOnlyArgv(argv)) return "read-only";
 	return "workspace-write";
 }
 
@@ -62,19 +115,19 @@ function explain(command: string, risk: Risk): string {
 		case "dangerous":
 			return "危险命令：可能删除或破坏工作区外的数据";
 		default:
-			return `可能修改工作区文件：${command.slice(0, 80)}`;
+			return `可能修改工作区文件：${truncateUtf16(command, 80)}`;
 	}
 }
 
 function shape(output: string, limits: CommandLimits): { text: string; truncated: boolean } {
 	const lines = output.split("\n");
 	if (lines.length <= limits.headLines + limits.tailLines && output.length <= limits.maxChars) return { text: output, truncated: false };
-	if (lines.length <= limits.headLines + limits.tailLines) return { text: `${output.slice(0, limits.maxChars / 2)}\n... [truncated] ...\n${output.slice(-limits.maxChars / 2)}`, truncated: true };
+	if (lines.length <= limits.headLines + limits.tailLines) return { text: `${truncateUtf16(output, Math.floor(limits.maxChars / 2))}\n... [truncated] ...\n${truncateUtf16Tail(output, Math.floor(limits.maxChars / 2))}`, truncated: true };
 	const head = lines.slice(0, limits.headLines);
 	const tail = lines.slice(-limits.tailLines);
 	const omitted = lines.length - head.length - tail.length;
 	let text = [...head, `... [${omitted} lines omitted] ...`, ...tail].join("\n");
-	if (text.length > limits.maxChars) text = `${text.slice(0, limits.maxChars / 2)}\n... [truncated] ...\n${text.slice(-limits.maxChars / 2)}`;
+	if (text.length > limits.maxChars) text = `${truncateUtf16(text, Math.floor(limits.maxChars / 2))}\n... [truncated] ...\n${truncateUtf16Tail(text, Math.floor(limits.maxChars / 2))}`;
 	return { text, truncated: true };
 }
 
@@ -268,11 +321,12 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				if (argv && argv.length > 0 && script) return fail("argv 与 shellScript 只能提供一个");
 				const cwdRel = typeof args.cwd === "string" && args.cwd ? args.cwd : ".";
 				const { abs: cwd, rel } = ctx.workspace.resolve(cwdRel);
-				if (!statSync(cwd).isDirectory()) return fail(`cwd 不是目录：${rel}`);
+				const cwdIdentity = statSync(cwd, { bigint: true });
+				if (!cwdIdentity.isDirectory()) return fail(`cwd 不是目录：${rel}`);
 				const timeout = Math.min(typeof args.timeoutMs === "number" ? args.timeoutMs : limits.defaultTimeoutMs, limits.maxTimeoutMs);
 				const display = script ?? (argv ?? []).map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : JSON.stringify(a))).join(" ");
-				const risk = classifyRisk(display);
-				const decision = await ctx.approve({ toolCallId: ctx.toolCallId, command: display, cwd: rel, risk, explanation: explain(display, risk) });
+				const risk = classifyRisk(script ?? argv ?? []);
+				const decision = await waitForApproval(ctx, { toolCallId: ctx.toolCallId, command: display, cwd: rel, risk, explanation: explain(display, risk) });
 				if (ctx.signal.aborted) return fail("命令已取消，未启动进程", { command: display, cwd: rel, risk, cancelled: true });
 				if (decision !== "allow") {
 					return fail(`命令未获批准：${display}`, { command: display, cwd: rel, risk, approved: false });
@@ -289,6 +343,11 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 					&& await (execution.probeLinuxScope ?? probeLinuxScope)(execution.linuxScope);
 				if (ctx.signal.aborted) return fail("命令已取消，未启动进程", { command: display, cwd: rel, risk, cancelled: true });
 				ctx.assertExecutionAllowed?.();
+				const currentCwd = ctx.workspace.resolve(cwdRel).abs;
+				const currentIdentity = statSync(currentCwd, { bigint: true });
+				if (currentCwd !== cwd || !currentIdentity.isDirectory() || currentIdentity.dev !== cwdIdentity.dev || currentIdentity.ino !== cwdIdentity.ino) {
+					return fail("工作目录在审批后已改变，未启动进程", { command: display, cwd: rel, risk });
+				}
 				const jobChild: WindowsJobProcess | undefined = launchJob?.(prog as string, rest, { cwd, env: environment });
 				const scopeChild: LinuxScopeProcess | undefined = useLinuxScope
 					? (execution.spawnLinuxScope ?? spawnLinuxScope)(prog as string, rest, { cwd, env: environment }, execution.linuxScope) : undefined;
@@ -438,7 +497,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				let ref: string | undefined;
 				let archiveError: string | undefined;
 				try {
-					ref = ctx.blobs?.put(raw, { kind: "raw", source: { tool: "command_run", toolCallId: ctx.toolCallId, commandSha256: sha256(display), commandPreview: display.slice(0, 512), cwd: rel, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, streamOrder: "observed-data-events", ...(captureMaxBytes !== undefined || cleanupIncomplete ? { captureComplete: !outputLimited && !cleanupIncomplete } : {}) } });
+					ref = ctx.blobs?.put(raw, { kind: "raw", source: { tool: "command_run", toolCallId: ctx.toolCallId, commandSha256: sha256(display), commandPreview: truncateUtf16(display, 512), cwd: rel, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, streamOrder: "observed-data-events", ...(captureMaxBytes !== undefined || cleanupIncomplete ? { captureComplete: !outputLimited && !cleanupIncomplete } : {}) } });
 					if (!ref) archiveError = "archive storage unavailable";
 				} catch { archiveError = "archive write or verification failed"; }
 				const invalidUtf8 = !isValidUtf8(raw);
@@ -467,7 +526,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				return {
 					ok: !exit.spawnError && !timedOut && !cancelled && !outputLimited && !cleanupIncomplete && exit.code === 0,
 					modelContent,
-					summary: `运行 ${display.slice(0, 60)}（${status}${cleanupHint}）`,
+					summary: `运行 ${truncateUtf16(display, 60)}（${status}${cleanupHint}）`,
 					details: { command: display, cwd: rel, risk, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, durationMs, outputChars: output.length, outputBytes: raw.length, outputSha256: sha256(raw), invalidUtf8, archiveError, streamOrder: "observed-data-events", toolCallId: ctx.toolCallId, truncated,
 						processTreeCleanupMode: scopeChild ? "systemd-scope" : jobChild ? "windows-job" : "best-effort",
 						...(bestEffort ? { processTreeCleanupConfirmed: false, processTreeCleanupReason: fallbackReason } : {}),

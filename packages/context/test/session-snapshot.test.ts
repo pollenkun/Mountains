@@ -171,8 +171,9 @@ describe("context snapshots reject incomplete, corrupted, and unsafe data", () =
 		const pending = builder();
 		pending.appendAssistant({ role: "assistant", content: "", reasoning: "", toolCalls: [{ id: "missing", name: "file_read", argumentsJson: "{}" }] });
 		assert.throws(() => pending.exportState(), /结果尚未齐全/);
-		const duplicate = builder(); append(duplicate, "same"); append(duplicate, "same");
-		assert.throws(() => duplicate.exportState(), /编号重复/);
+		const duplicate = builder(); append(duplicate, "same");
+		assert.throws(() => append(duplicate, "same"), /编号重复/);
+		assert.doesNotThrow(() => duplicate.exportState());
 		const wrong = builder();
 		wrong.appendAssistant({ role: "assistant", content: "", reasoning: "", toolCalls: [{ id: "wrong", name: "file_read", argumentsJson: "{}" }] });
 		wrong.appendToolResult("wrong", "command_run", "result", { kind: "tool_output", ref: "shown_wrong", target: "wrong" });

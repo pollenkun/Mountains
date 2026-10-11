@@ -115,6 +115,12 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 		if (typeof value !== "boolean") throw new Error(`配置 ${name} 必须为布尔值`);
 	}
 	if (config.contextWindow !== undefined && (!Number.isSafeInteger(config.contextWindow) || config.contextWindow < 32_768)) throw new Error("contextWindow 必须是不小于 32768 的整数");
+	for (const [name, value] of Object.entries({ maxTokens: config.maxTokens, "limits.maxTurns": config.limits.maxTurns, "limits.maxInputTokens": config.limits.maxInputTokens, "limits.maxOutputTokens": config.limits.maxOutputTokens, "retry.maxAttempts": config.retry.maxAttempts })) {
+		if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为有效的正整数`);
+	}
+	for (const [name, value] of Object.entries({ "limits.maxCost": config.limits.maxCost, "retry.baseDelayMs": config.retry.baseDelayMs, ...(config.retry.maxDelayMs !== undefined ? { "retry.maxDelayMs": config.retry.maxDelayMs } : {}) })) {
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`${name} 必须为有限非负数`);
+	}
 	for (const [name, value] of Object.entries({ maxRequests: config.limits.maxRequests, maxDurationMs: config.limits.maxDurationMs })) {
 		if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647)) throw new Error(`limits.${name} 必须为有效的正整数`);
 	}

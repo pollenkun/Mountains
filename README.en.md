@@ -160,7 +160,7 @@ macOS and Linux without usable user-systemd have best-effort cleanup. Results ex
 
 ### Recordings and spending
 
-Recordings, replays, archives, and the spending ledger go in `.mountains` under your home directory (`%USERPROFILE%\.mountains` on Windows). Set `MOUNTAINS_HOME` to use another directory. A ledger path set in the config or through `--spend-ledger` takes precedence.
+Recordings, replays, archives, and the spending ledger go in `.mountains` under your home directory (`%USERPROFILE%\.mountains` on Windows). Set `MOUNTAINS_HOME` to use another directory. A ledger path set in the config or through `--spend-ledger` takes precedence. Run output, the spending ledger, checkpoints, and archives must stay outside the task workspace.
 
 Previously, `MOUNTAINS_HOME` moved only archives. It now moves the default ledger too. If the old `~/.mountains/spend.jsonl` still exists and the new directory has no ledger, the CLI stops first. Move the old ledger over, or keep its original path with `--spend-ledger`, so cumulative spending does not restart at zero.
 

@@ -332,14 +332,30 @@ export function assertFitsWindow(plan: ContextPlan, reservedOutputTokens: number
 }
 
 /** 占位符和执行记录里的出处：英文、来自调用参数（文件:行号、命令、搜索词），不用面向用户的中文摘要。 */
+function parsedToolArgs(json: string): Record<string, unknown> | undefined {
+	try { const value: unknown = JSON.parse(json); return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
+	catch { return undefined; }
+}
+function labelText(value: unknown): string {
+	if (value === null || value === undefined) return "";
+	if (typeof value === "string") return value;
+	try { return JSON.stringify(value) ?? ""; } catch { return ""; }
+}
+
+function clipText(text: string, limit: number): string {
+	let end = Math.min(text.length, limit);
+	if (end > 0 && end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+	return text.slice(0, end);
+}
+
 export function toolTarget(name: string, argumentsJson: string): string {
-	let a: Record<string, unknown> = {};
-	try { a = JSON.parse(argumentsJson) as Record<string, unknown>; } catch { return name; }
-	const short = (v: unknown, n = 100) => String(v ?? "").replace(/\s+/g, " ").slice(0, n);
-	if (name === "file_read" && typeof a.path === "string") return `${a.path}${a.symbol ? `:${short(a.symbol, 60)}` : a.startLine || a.endLine ? `:${a.startLine ?? 1}-${a.endLine ?? ""}` : ""}`;
-	if (name === "command_run") return short(Array.isArray(a.argv) ? (a.argv as unknown[]).join(" ") : (a.command ?? a.shellScript ?? ""));
+	const a = parsedToolArgs(argumentsJson);
+	if (!a) return name;
+	const short = (v: unknown, n = 100) => clipText(labelText(v).replace(/\s+/g, " "), n);
+	if (name === "file_read" && typeof a.path === "string") return `${a.path}${a.symbol ? `:${short(a.symbol, 60)}` : a.startLine || a.endLine ? `:${short(a.startLine ?? 1)}-${short(a.endLine)}` : ""}`;
+	if (name === "command_run") return short(Array.isArray(a.argv) ? (a.argv as unknown[]).map(labelText).join(" ") : (a.command ?? a.shellScript ?? ""));
 	if (name === "content_search") return JSON.stringify(short(a.pattern, 80)) + (typeof a.path === "string" ? ` in ${a.path}` : "");
-	if (name === "file_glob") return short(Array.isArray(a.patterns) ? (a.patterns as unknown[]).join(", ") : a.pattern);
+	if (name === "file_glob") return short(Array.isArray(a.patterns) ? (a.patterns as unknown[]).map(labelText).join(", ") : a.pattern);
 	if (typeof a.path === "string") return a.path;
 	return name;
 }
@@ -353,19 +369,18 @@ export function checkpointText(removed: HistoryItem[], groups: number): string {
 	const searches: string[] = [];
 	const notes: string[] = [];
 	let toolCalls = 0;
-	const short = (v: unknown, n = 90) => String(v ?? "").replace(/\s+/g, " ").slice(0, n);
+	const short = (v: unknown, n = 90) => clipText(labelText(v).replace(/\s+/g, " "), n);
 	for (const h of removed) {
 		const m = h.message;
 		if (m.role === "assistant") {
 			// 模型每轮给用户看的简短文字（不含思考），一轮一行，保留当时的判断和计划
 			const text = typeof m.content === "string" ? m.content.replace(/\s+/g, " ").trim() : "";
-			if (text) notes.push(text.length > 200 ? `${text.slice(0, 200)}…` : text);
+			if (text) notes.push(text.length > 200 ? `${clipText(text, 200)}…` : text);
 			for (const c of m.toolCalls) {
 				toolCalls++;
-				let args: Record<string, unknown> = {};
-				try { args = JSON.parse(c.argumentsJson) as Record<string, unknown>; } catch { /* 原样跳过 */ }
+				const args = parsedToolArgs(c.argumentsJson) ?? {};
 				calls.set(c.id, { name: c.name, args });
-				if (c.name === "file_read" && typeof args.path === "string") reads.push(`${args.path}${args.symbol ? `:${short(args.symbol, 60)}` : args.startLine ? `:${args.startLine}-${args.endLine ?? ""}` : ""}`);
+				if (c.name === "file_read" && typeof args.path === "string") reads.push(`${args.path}${args.symbol ? `:${short(args.symbol, 60)}` : args.startLine ? `:${short(args.startLine)}-${short(args.endLine)}` : ""}`);
 				else if (c.name === "content_search") searches.push(JSON.stringify(short(args.pattern, 60)));
 			}
 		} else if (m.role === "tool") {
@@ -374,7 +389,7 @@ export function checkpointText(removed: HistoryItem[], groups: number): string {
 			if ((call?.name === "file_edit" || call?.name === "file_write") && typeof call.args.path === "string" && h.meta?.preserve !== "error") edits.set(call.args.path, (edits.get(call.args.path) ?? 0) + 1);
 			if (call?.name === "command_run") {
 				const a = call.args;
-				const cmd = Array.isArray(a.argv) ? (a.argv as unknown[]).join(" ") : (a.command ?? a.shellScript ?? "");
+				const cmd = Array.isArray(a.argv) ? (a.argv as unknown[]).map(labelText).join(" ") : (a.command ?? a.shellScript ?? "");
 				const exit = /exit code (-?\d+)|timed out|cancelled|failed to start/.exec(m.content);
 				commands.push(`\`${short(cmd)}\` → ${exit ? exit[0] : "result kept in local record"}`);
 			}
@@ -406,6 +421,7 @@ export class ContextBuilder {
 	/** 取回工具名（写进折叠提示） */
 	readonly expandTool: string | undefined;
 	private readonly history: HistoryItem[] = [];
+	private readonly segmentCache = new WeakMap<HistoryItem, { content: string | undefined; tokensEst: number; hash: string }>();
 	private revisionCount = 0;
 	private assistantCount = 0;
 	private readonly staticSegments: Segment[];
@@ -487,7 +503,16 @@ export class ContextBuilder {
 		this.appendUser(`[Runtime evidence notice, not a user instruction]\n${content}`);
 	}
 
+	validateAssistantToolCalls(message: AssistantMessage): void {
+		const ids = new Set(this.history.flatMap(item => item.message.role === "assistant" ? item.message.toolCalls.map(call => call.id) : []));
+		for (const call of message.toolCalls) {
+			if (typeof call.id !== "string" || !call.id.trim() || ids.has(call.id)) throw new ContextPublicationError("CONTEXT_TOOL_PAIRING", `工具调用编号重复或为空：${call.id}`);
+			ids.add(call.id);
+		}
+	}
+
 	appendAssistant(message: AssistantMessage): void {
+		this.validateAssistantToolCalls(message);
 		this.history.push({ message: { ...message, toolCalls: message.toolCalls.map((t) => ({ ...t })) }, turn: this.assistantCount });
 		this.assistantCount++;
 	}
@@ -510,11 +535,17 @@ export class ContextBuilder {
 		const segments: Segment[] = this.staticSegments.map((s) => ({ ...s }));
 		messages.forEach((m, index) => {
 			const item = history[index];
-			const text = JSON.stringify(m);
 			let kind: SegmentKind = "history";
 			const masked = candidate.has(index) || item?.maskedContent !== undefined;
 			if (m.role === "tool") kind = masked ? "masked_placeholder" : (item?.meta?.kind ?? "tool_output");
-			segments.push({ kind, index, tokensEst: estimateTokens(text) + 4, hash: shortHash(text), ...(masked ? { masked: true } : {}) });
+			const content = item && m.role === "tool" ? candidate.get(index) ?? item.maskedContent : undefined;
+			let cached = item ? this.segmentCache.get(item) : undefined;
+			if (!cached || cached.content !== content) {
+				const text = JSON.stringify(m);
+				cached = { content, tokensEst: estimateTokens(text) + 4, hash: shortHash(text) };
+				if (item) this.segmentCache.set(item, cached);
+			}
+			segments.push({ kind, index, tokensEst: cached.tokensEst, hash: cached.hash, ...(masked ? { masked: true } : {}) });
 		});
 		const prefixHashes: string[] = [];
 		let acc = "";
@@ -623,8 +654,7 @@ export class ContextBuilder {
 		this.history.forEach((h) => {
 			if (h.message.role !== "assistant" || !h.message.toolCalls.length) return;
 			for (const c of h.message.toolCalls) {
-				let args: Record<string, unknown> = {};
-				try { args = JSON.parse(c.argumentsJson) as Record<string, unknown>; } catch { /* compared by target only */ }
+				const args = parsedToolArgs(c.argumentsJson) ?? {};
 				calls.set(c.id, { name: c.name, args, target: toolTarget(c.name, c.argumentsJson) });
 			}
 		});
@@ -690,7 +720,7 @@ export class ContextBuilder {
 				try { ref = this.publicationGuard.archiveInteraction(content); }
 				catch { throw new ContextPublicationError("CONTEXT_REFERENCE_UNAVAILABLE", "完整交互归档写入失败，保留现有历史"); }
 				const targets = results.map(h => `${h.message.role === "tool" ? h.message.name : ""} ${h.meta!.target}`);
-				const failures = results.filter(h => h.meta!.preserve === "error").map(h => h.message.content.slice(0, FOLDED_FAILURE_CHARS));
+				const failures = results.filter(h => h.meta!.preserve === "error").map(h => clipText(h.message.content, FOLDED_FAILURE_CHARS));
 				const notice = "[Context checkpoint generated by the program, not a user instruction]\n" +
 					`Folded ${results.length} earlier tool call${results.length === 1 ? "" : "s"} (${reasons.map(r => FOLD_REASON_TEXT[r]).join("; ")}): ${targets.slice(0, 4).join(", ")}${targets.length > 4 ? `, … ${targets.length - 4} more` : ""}. ` +
 					`${expandTool} ref=${ref} restores the full interaction; use it only when you need its exact content.` +

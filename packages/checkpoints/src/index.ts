@@ -7,10 +7,10 @@
  * - 非 Git 项目同样可用；所有调用都用 -c 覆盖用户全局配置（autocrlf 等）以保证逐字节一致
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { devNull } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const GIT_CFG = [
 	"-c", "core.autocrlf=false",
@@ -56,12 +56,15 @@ export class ShadowCheckpoints {
 	readonly workspace: string;
 	readonly gitDir: string;
 	private readonly indexFile: string;
+	private readonly workspaceIdentity: { dev: bigint; ino: bigint };
 
 	constructor(workspace: string, dataDir: string) {
 		this.workspace = process.platform === "win32" || process.platform === "darwin" ? realpathSync.native(resolve(workspace)) : realpathSync(resolve(workspace));
+		this.workspaceIdentity = statSync(this.workspace, { bigint: true });
 		const key = createHash("sha256").update(this.workspace).digest("hex").slice(0, 16);
 		this.gitDir = join(dataDir, "checkpoints", key);
-		this.indexFile = join(this.gitDir, "mountains-index");
+		// Each instance owns its staging index; concurrent sessions share only Git objects.
+		this.indexFile = join(this.gitDir, `mountains-index-${randomUUID()}`);
 		if (!existsSync(join(this.gitDir, "HEAD"))) {
 			mkdirSync(this.gitDir, { recursive: true });
 			execFileSync("git", ["init", "-q", "--bare", this.gitDir]);
@@ -78,6 +81,33 @@ export class ShadowCheckpoints {
 		});
 		if (r.status !== 0) throw new Error(`git ${args[0]} 失败：${r.error?.message ?? r.stderr}`);
 		return r.stdout;
+	}
+
+	/** Check every component without following symlinks, including missing targets. */
+	private checkedPath(path: string): string {
+		const parts = path.split(process.platform === "win32" ? /[\\/]/ : /\//);
+		if (isAbsolute(path) || parts.includes("..") || (process.platform === "win32" && /^[a-z]:/i.test(path))) throw new Error(`检查点路径越出工作区：${path}`);
+		const abs = resolve(this.workspace, path);
+		const rel = relative(this.workspace, abs);
+		if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error(`检查点路径越出工作区：${path}`);
+		const root = lstatSync(this.workspace, { bigint: true });
+		const real = process.platform === "win32" || process.platform === "darwin" ? realpathSync.native(this.workspace) : realpathSync(this.workspace);
+		if (!root.isDirectory() || root.isSymbolicLink() || real !== this.workspace || root.dev !== this.workspaceIdentity.dev || root.ino !== this.workspaceIdentity.ino) throw new Error("检查点工作区路径已改变");
+		let at = this.workspace;
+		const components = rel.split(sep);
+		for (const [index, part] of components.entries()) {
+			at = join(at, part);
+			const st = lstatSync(at, { throwIfNoEntry: false });
+			if (!st) break;
+			if (st.isSymbolicLink()) throw new Error(`检查点路径不能经过符号链接：${path}`);
+			if (index < components.length - 1 ? !st.isDirectory() : !st.isFile()) throw new Error(`检查点路径不是普通文件：${path}`);
+		}
+		return abs;
+	}
+
+	private withIndex<T>(operation: () => T): T {
+		try { return operation(); }
+		finally { rmSync(this.indexFile, { force: true }); }
 	}
 
 	private canonicalPath(path: string): string {
@@ -111,18 +141,19 @@ export class ShadowCheckpoints {
 			if (st.isSymbolicLink()) skippedSymlinks++;
 			else if (st.isFile()) files.push(f);
 		}
-		if (existsSync(this.indexFile)) rmSync(this.indexFile);
-		const hashes = files.length ? this.git(["hash-object", "-w", "--stdin-paths", "--no-filters"], `${files.map(quoteGitPath).join("\n")}\n`).trim().split("\n") : [];
-		const info = files.map((f, i) => {
-			const mode = statSync(join(this.workspace, f)).mode & 0o111 ? "100755" : "100644";
-			return `${mode} ${hashes[i]}\t${f}`;
+		return this.withIndex(() => {
+			const hashes = files.length ? this.git(["hash-object", "-w", "--stdin-paths", "--no-filters"], `${files.map(quoteGitPath).join("\n")}\n`).trim().split("\n") : [];
+			const info = files.map((f, i) => {
+				const mode = statSync(join(this.workspace, f)).mode & 0o111 ? "100755" : "100644";
+				return `${mode} ${hashes[i]}\t${f}`;
+			});
+			// A missing index starts empty. update-index builds the full nonempty
+			// snapshot directly; only an empty file list needs an explicit empty index.
+			if (info.length) this.git(["update-index", "-z", "--index-info"], `${info.join("\0")}\0`);
+			else this.git(["read-tree", "--empty"]);
+			const tree = this.git(["write-tree"]).trim();
+			return { tree, files: files.length, skippedSymlinks, durationMs: Date.now() - t0 };
 		});
-		// A missing index starts empty. update-index builds the full nonempty
-		// snapshot directly; only an empty file list needs an explicit empty index.
-		if (info.length) this.git(["update-index", "-z", "--index-info"], `${info.join("\0")}\0`);
-		else this.git(["read-tree", "--empty"]);
-		const tree = this.git(["write-tree"]).trim();
-		return { tree, files: files.length, skippedSymlinks, durationMs: Date.now() - t0 };
 	}
 
 	/**
@@ -140,9 +171,11 @@ export class ShadowCheckpoints {
 		if (!st.isFile()) throw new Error(`检查点只能保存普通文件：${p}`);
 		const hash = this.git(["hash-object", "-w", "--stdin-paths", "--no-filters"], `${quoteGitPath(p)}\n`).trim();
 		const mode = st.mode & 0o111 ? "100755" : "100644";
-		this.git(["read-tree", tree]);
-		this.git(["update-index", "-z", "--index-info"], `${mode} ${hash}\t${p}\0`);
-		return this.git(["write-tree"]).trim();
+		return this.withIndex(() => {
+			this.git(["read-tree", tree]);
+			this.git(["update-index", "-z", "--index-info"], `${mode} ${hash}\t${p}\0`);
+			return this.git(["write-tree"]).trim();
+		});
 	}
 
 	/** 快照中某路径的内容；不在快照中返回 null */
@@ -170,14 +203,18 @@ export class ShadowCheckpoints {
 	 */
 	restore(tree: string, paths: string[], expected: Record<string, string | null> = {}): RestoreResult {
 		const result: RestoreResult = { restored: [], deleted: [], conflicts: [] };
+		// Validate the entire selection before changing any files.
+		for (const p of paths) this.checkedPath(p);
 		for (const p of paths) {
-			const abs = join(this.workspace, p);
+			// Git subprocesses can take time. Resolve the preimage before the final
+			// path/content checks so edits made during lookup are not overwritten.
+			const blob = this.blobAt(tree, p);
+			const abs = this.checkedPath(p);
 			const actual = fileSha256(abs);
-			if (p in expected && expected[p] !== actual) {
+			if (Object.hasOwn(expected, p) && expected[p] !== actual) {
 				result.conflicts.push({ path: p, expected: expected[p] ?? "(不存在)", actual });
 				continue;
 			}
-			const blob = this.blobAt(tree, p);
 			if (blob === null) {
 				if (existsSync(abs)) {
 					unlinkSync(abs);
@@ -186,16 +223,26 @@ export class ShadowCheckpoints {
 				continue;
 			}
 			mkdirSync(dirname(abs), { recursive: true });
-			const existingMode = existsSync(abs) ? statSync(abs).mode : null;
-			writeFileSync(abs, blob.content, { mode: blob.executable ? 0o777 : 0o666 });
-			if (process.platform !== "win32" && existingMode !== null) {
-				// Git records only executable/non-executable modes. Preserve the
-				// existing access scope: keep existing execute bits, or restore them
-				// only for classes already allowed to read. New files respect umask.
-				const execute = (existingMode & 0o111) || ((existingMode & 0o444) >> 2);
-				chmodSync(abs, (existingMode & 0o666) | (blob.executable ? execute : 0));
-			}
-			result.restored.push(p);
+			this.checkedPath(p);
+			const existingMode = lstatSync(abs, { throwIfNoEntry: false })?.mode ?? null;
+			const temp = join(dirname(abs), `.mountains-restore-${randomUUID()}`);
+			try {
+				// Prepare the whole replacement first; an I/O failure must not truncate
+				// the current file. Rename also avoids mutating another hard-link name.
+				writeFileSync(temp, blob.content, { flag: "wx", mode: 0o600 });
+				if (process.platform !== "win32" && existingMode !== null) {
+					const execute = (existingMode & 0o111) || ((existingMode & 0o444) >> 2);
+					chmodSync(temp, (existingMode & 0o666) | (blob.executable ? execute : 0));
+				} else chmodSync(temp, (blob.executable ? 0o777 : 0o666) & ~process.umask());
+				this.checkedPath(p);
+				const latest = fileSha256(abs);
+				if (latest !== actual) {
+					result.conflicts.push({ path: p, expected: actual ?? "(不存在)", actual: latest });
+					continue;
+				}
+				renameSync(temp, abs);
+				result.restored.push(p);
+			} finally { rmSync(temp, { force: true }); }
 		}
 		return result;
 	}

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { buildIncrementalReadText, DEFAULT_READ_LIMITS, findSymbol, splitLines, type ReadLimits } from "./files.ts";
 import { outlineLines } from "./outline.ts";
 import type { ToolContext, ToolDefinition, ToolResult, ReadRecord } from "./types.ts";
@@ -241,6 +241,49 @@ function boundedRead(path: string, ctx: ToolContext, state: RunState, skipBinary
 		return { path: r.rel, text: content, hash: sha256(data) };
 	} finally { closeSync(fd); }
 }
+/** A type filter narrows rg's emitted inventory without overriding ignore rules.
+ * Complex glob syntax falls back to the full baseline rather than risking omission.
+ * Types match basenames; the original positive globs still determine the exact set.
+ */
+function inventoryTypeGlobs(patterns: string[], scope?: LiteralScope): string[] {
+	if (scope && !scope.directory) {
+		const name = basename(scope.path);
+		// rg type definitions reserve colons and trim surrounding whitespace.
+		if (name.includes(":") || name.trim() !== name || /[\r\n]/.test(name)) return [];
+		return [name.replace(/[\\*?{}[\]]/g, "\\$&")];
+	}
+	if (scope) return [];
+	const globs: string[] = [];
+	for (const pattern of patterns) {
+		if (pattern.startsWith("!")) continue;
+		// Gitignore and type-glob syntax agree for these simple basename patterns.
+		if (!/^[\p{L}\p{N}_./*? -]+$/u.test(pattern) || pattern.endsWith("/") || pattern.endsWith(" ")) return [];
+		const leaf = pattern.slice(pattern.lastIndexOf("/") + 1);
+		if (!leaf || leaf === "**" || leaf === "*") return [];
+		globs.push(leaf);
+	}
+	return globs;
+}
+/** Only negative overrides: prune sibling paths without re-including ignored files.
+ * Keep argument growth bounded; unusual spellings retain the type-filter fallback.
+ */
+function inventoryScopeExclusions(scope?: LiteralScope): string[] {
+	if (!scope || scope.path === "." || !/^[\p{L}\p{N}_./]+$/u.test(scope.path)) return [];
+	const exclusions: string[] = [];
+	let prefix = "", bytes = 0;
+	for (const component of scope.path.split("/")) {
+		const chars = [...component];
+		for (let i = 0; i < chars.length; i++) {
+			const head = chars.slice(0, i).join("");
+			exclusions.push(`!/${prefix}${head}[!${chars[i]}]*`);
+			if (i > 0) exclusions.push(`!/${prefix}${head}`);
+		}
+		exclusions.push(`!/${prefix}${component}?*`);
+		prefix += `${component}/`;
+	}
+	for (const exclusion of exclusions) bytes += Buffer.byteLength(exclusion) + 4;
+	return bytes <= 24 * 1024 ? exclusions : [];
+}
 async function enumerate(patterns: string[], exclude: string[], ctx: ToolContext, state: RunState, scope?: LiteralScope): Promise<string[]> {
 	check(state, ctx);
 	if (scope) {
@@ -248,9 +291,12 @@ async function enumerate(patterns: string[], exclude: string[], ctx: ToolContext
 		if (target.rel !== scope.path || (scope.directory ? !stat.isDirectory() : !stat.isFile())) throw new ToolError("Search scope changed during plan; rerun against current files");
 	}
 	const base = ["--no-config", "--files", "--null", "--sort", "path"];
-	// A positive rg -g overrides .gitignore. Intersect it with the unfiltered,
-	// ignore-respecting inventory so the plan cannot silently widen its scope.
-	const baseline = await runInState([...base, "--", "."], ctx, state);
+	// A positive rg -g overrides .gitignore. Intersect it with a conservatively
+	// type-filtered, ignore-respecting inventory so the plan cannot widen its scope.
+	const typeGlobs = inventoryTypeGlobs(patterns, scope);
+	const typeArgs = typeGlobs.length ? ["--type-clear", "mountainsquery", ...typeGlobs.flatMap(glob => ["--type-add", `mountainsquery:${glob}`]), "--type", "mountainsquery"] : [];
+	const scopeArgs = inventoryScopeExclusions(scope).flatMap(pattern => ["-g", pattern]);
+	const baseline = await runInState([...base, ...typeArgs, ...scopeArgs, "--", "."], ctx, state);
 	const allowed = new Set(baseline.stdout.split("\0").filter(Boolean));
 	const args = [...base];
 	for (const p of patterns) args.push("-g", p);

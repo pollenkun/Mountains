@@ -466,6 +466,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			if (res.status === 429 || res.status >= 500) retryAfterMs = parseRetryAfter(res.headers);
 			if (!res.body) return res;
 			const [forPi, forTap] = res.body.tee();
+			const jsonRejection = res.status >= 400 && res.status < 500 && res.headers.get("content-type")?.includes("application/json");
 			capture.done = (async () => {
 				const dec = new TextDecoder();
 				let buf = "";
@@ -479,12 +480,18 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 					}
 					buf += dec.decode(value, { stream: true });
 					const cut = buf.lastIndexOf("\n");
-					if (cut >= 0) {
+					if (!jsonRejection && cut >= 0) {
 						parseSseInto(capture, buf.slice(0, cut + 1));
 						buf = buf.slice(cut + 1);
 					}
 				}
-				parseSseInto(capture, buf + dec.decode());
+				const rest = buf + dec.decode();
+				if (jsonRejection) {
+					// Error responses can carry usage too. Keep it as evidence instead
+					// of treating every non-SSE rejection as an absent invoice.
+					try { parseSseInto(capture, `data: ${JSON.stringify(JSON.parse(rest))}`); }
+					catch { /* The HTTP rejection itself remains available to the host. */ }
+				} else parseSseInto(capture, rest);
 			})().catch(() => undefined);
 			return new Response(forPi, { status: res.status, statusText: res.statusText, headers: res.headers });
 		};
@@ -533,7 +540,9 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 				else if (ev.type === "thinking_delta") handlers.onThinking?.(ev.delta);
 			}
 			const final = await s.result();
-			await Promise.race([capture.done, new Promise((r) => setTimeout(r, 2000))]);
+			let drainTimer: ReturnType<typeof setTimeout> | undefined;
+			try { await Promise.race([capture.done, new Promise((r) => { drainTimer = setTimeout(r, 2000); })]); }
+			finally { clearTimeout(drainTimer); }
 			const finishedAt = Date.now();
 
 			let text = "";
@@ -556,7 +565,10 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			const usage = normalizeUsage(providerFor(req.model), capture.usage);
 			const billingReceipt = !billingTransportRejected && capture.model !== null && responseModelMatches(req.model, capture.model)
 				? officialBillingReceipt(req.model, this.options.baseUrl, capture.usage, usage) : undefined;
-			const billingReceiptRejected = billingTransportRejected || officialBillingReceiptRejected(req.model, this.options.baseUrl, capture.usage, usage, capture.model);
+			// A plain HTTP rejection has no invoice to validate. Keep explicit usage
+			// and transport contradictions fail-closed, including on error responses.
+			const unbilledHttpRejection = status !== null && status >= 400 && status < 500 && capture.usage === null;
+			const billingReceiptRejected = billingTransportRejected || !unbilledHttpRejection && officialBillingReceiptRejected(req.model, this.options.baseUrl, capture.usage, usage, capture.model);
 			return {
 				ok: !isError,
 				message: { role: "assistant", content: text, reasoning, toolCalls },

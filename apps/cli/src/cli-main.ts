@@ -12,7 +12,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { USAGE, parseRunArgs, parseReplayArgs } from "./cli-args.ts";
 import type { EngineEvent } from "@mountains/protocol";
 import { AgentSession, BudgetGuard, DEFAULT_LIMITS, type RunSummary, replayAdapterFromRecording } from "@mountains/engine";
 import { ApprovalChatAdapter, ChatCompletionsAdapter, currencyOf, type Currency, type ModelAdapter, pricingFor, providerOf } from "@mountains/providers";
@@ -22,8 +22,7 @@ import { expandHome, mountainsHome } from "./paths.ts";
 
 const EXIT = { completed: 0, failed: 1, usage: 2, limit: 3, cancelled: 130 } as const;
 
-const USAGE = "用法：\n  mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>] [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]\n" +
-	"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n";
+
 
 function usage(msg?: string): never {
 	if (msg) process.stderr.write(`错误：${msg}\n`);
@@ -44,7 +43,7 @@ function projectDir(workspaceRoot: string, home = mountainsHome()): string {
 
 function requireExternalStorage(path: string, workspace: string): string {
 	const dest = resolve(path);
-	if (new Workspace(workspace).contains(dest)) throw new Error("项目记忆与原文档案必须存放在任务工作区之外");
+	if (new Workspace(workspace).contains(dest)) throw new Error("运行数据、检查点与原文档案必须存放在任务工作区之外");
 	return dest;
 }
 
@@ -110,22 +109,7 @@ function finish(summary: RunSummary, outDir: string, json: boolean, extra: Recor
 }
 
 async function cmdRun(argv: string[]): Promise<void> {
-	const { values } = parseArgs({
-		args: argv,
-		options: {
-			help: { type: "boolean", short: "h" },
-			task: { type: "string" },
-			"task-file": { type: "string" },
-			workspace: { type: "string" },
-			config: { type: "string" },
-			json: { type: "boolean", default: false },
-			out: { type: "string" },
-			"run-id": { type: "string" },
-			"base-url": { type: "string" },
-			"spend-ledger": { type: "string" },
-		},
-		strict: true,
-	});
+	const { values } = parseRunArgs(argv);
 	if (values.help) help();
 	if (!values.workspace) usage("缺少 --workspace");
 	if (!values.task === !values["task-file"]) usage("--task 与 --task-file 必须且只能给一个");
@@ -139,7 +123,7 @@ async function cmdRun(argv: string[]): Promise<void> {
 		throw new Error(`检测到旧累计花费台账：${legacyLedger}。请先将其迁移到 ${spendLedger}，或用 --spend-ledger 显式指定原路径；为避免重置累计预算，本次未发出请求。`);
 	}
 	const runId = values["run-id"] ?? `run_${randomUUID().slice(0, 12)}`;
-	const outDir = resolve(values.out ?? join(mountainsHome(), "runs", runId));
+	const outDir = requireExternalStorage(values.out ?? join(mountainsHome(), "runs", runId), resolve(values.workspace));
 	mkdirSync(outDir, { recursive: true });
 
 	let apiKey = process.env[cfg.apiKeyEnv];
@@ -203,11 +187,7 @@ async function cmdRun(argv: string[]): Promise<void> {
 }
 
 async function cmdReplay(argv: string[]): Promise<void> {
-	const { values } = parseArgs({
-		args: argv,
-		options: { help: { type: "boolean", short: "h" }, recording: { type: "string" }, workspace: { type: "string" }, out: { type: "string" }, json: { type: "boolean", default: false } },
-		strict: true,
-	});
+	const { values } = parseReplayArgs(argv);
 	if (values.help) help();
 	if (!values.recording || !values.workspace) usage("replay 需要 --recording 与 --workspace");
 	const lines = readFileSync(values.recording, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; data: Record<string, unknown> });
@@ -221,7 +201,7 @@ async function cmdReplay(argv: string[]): Promise<void> {
 		billingCurrency = meta.billingCurrency;
 		if (!pricingFor(model, billingCurrency)) throw new Error(`录制模型 ${model} 没有 ${billingCurrency} 官方价格`);
 	}
-	const outDir = resolve(values.out ?? join(mountainsHome(), "replays", `replay_${randomUUID().slice(0, 8)}`));
+	const outDir = requireExternalStorage(values.out ?? join(mountainsHome(), "replays", `replay_${randomUUID().slice(0, 8)}`), resolve(values.workspace));
 	mkdirSync(outDir, { recursive: true });
 	const adapter: ModelAdapter = replayAdapterFromRecording(values.recording);
 	const session = new AgentSession({

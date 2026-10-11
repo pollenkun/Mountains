@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { performance } from "node:perf_hooks";
 import { hasPathAncestor, pathAncestry } from "./path-identity.ts";
 
 export class ToolError extends Error {
@@ -190,12 +191,70 @@ export function isValidUtf8(bytes: Uint8Array): boolean {
 	}
 }
 
+/** Explicit short-lived paging views retain authenticated bytes, never filesystem metadata.
+ * A handle selects this exact verified view even if its backing archive later changes. */
+export const ARCHIVE_SNAPSHOT_LIMITS = { maxBytes: 128 * 1024 * 1024, maxEntries: 4, ttlMs: 5 * 60_000 } as const;
+const SNAPSHOT_INDEX_BYTES = 64 * 1024;
+export class VerifiedBlobSnapshot {
+	readonly kind: BlobKind;
+	readonly hash: string;
+	readonly totalBytes: number;
+	readonly invalidUtf8: boolean;
+	readonly totalLines: number;
+	readonly retainedBytes: number;
+	readonly #bytes: Buffer;
+	readonly #lineCounts: Uint32Array;
+
+	constructor(verified: BlobRange) {
+		this.kind = verified.kind; this.hash = verified.hash; this.totalBytes = verified.totalBytes;
+		this.invalidUtf8 = verified.invalidUtf8;
+		// Own the bytes: callers must never be able to mutate a verified view.
+		this.#bytes = Buffer.from(verified.bytes);
+		this.#lineCounts = new Uint32Array(Math.floor(this.totalBytes / SNAPSHOT_INDEX_BYTES) + 1);
+		let lines = 0;
+		for (let i = 0; i < this.totalBytes; i++) {
+			if (i % SNAPSHOT_INDEX_BYTES === 0) this.#lineCounts[i / SNAPSHOT_INDEX_BYTES] = lines;
+			if (this.#bytes[i] === 10) lines++;
+		}
+		if (this.totalBytes % SNAPSHOT_INDEX_BYTES === 0) this.#lineCounts[this.totalBytes / SNAPSHOT_INDEX_BYTES] = lines;
+		this.totalLines = lines + 1;
+		this.retainedBytes = this.totalBytes + this.#lineCounts.byteLength;
+		Object.freeze(this);
+	}
+
+	byteAt(offset: number): number | undefined { return this.#bytes[offset]; }
+	/** Always return a copy, so editing a delivered page cannot corrupt future pages. */
+	read(start: number, end: number): Buffer { return Buffer.from(this.#bytes.subarray(start, end)); }
+	lineAt(offset: number): number {
+		const chunk = Math.floor(offset / SNAPSHOT_INDEX_BYTES);
+		let lines = this.#lineCounts[chunk]!;
+		for (let i = chunk * SNAPSHOT_INDEX_BYTES; i < offset; i++) if (this.#bytes[i] === 10) lines++;
+		return lines + 1;
+	}
+	lineStart(line: number): number | undefined {
+		if (line === 1) return 0;
+		if (!Number.isSafeInteger(line) || line < 1 || line > this.totalLines) return undefined;
+		const target = line - 1;
+		let low = 0, high = this.#lineCounts.length;
+		while (low < high) {
+			const mid = (low + high) >>> 1;
+			if (this.#lineCounts[mid]! < target) low = mid + 1; else high = mid;
+		}
+		const chunk = Math.max(0, low - 1);
+		let lines = this.#lineCounts[chunk]!;
+		for (let i = chunk * SNAPSHOT_INDEX_BYTES; i < this.totalBytes; i++) if (this.#bytes[i] === 10 && ++lines === target) return i + 1;
+		return undefined;
+	}
+}
+
 /** Immutable byte archives. A reference is resolved only inside the host-selected scope. */
 export class BlobStore {
 	readonly dir: string;
 	private readonly workspaceId: string;
 	private readonly sessionId: string;
 	private readonly scope: BlobScope | undefined;
+	private readonly snapshots = new Map<string, { ref: string; view: VerifiedBlobSnapshot; expires: number }>();
+	private snapshotBytes = 0;
 
 	constructor(dir: string, scope?: BlobScope) {
 		mkdirSync(dir, { recursive: true });
@@ -389,7 +448,7 @@ export class BlobStore {
 					const state: CommandArchiveState = { toolCallId };
 					if (Object.hasOwn(value, "exitCode")) {
 						const code = value.exitCode;
-						if (code !== null && (typeof code !== "number" || !Number.isSafeInteger(code) || code < 0 || code > 0x7fffffff)) return null;
+						if (code !== null && (typeof code !== "number" || !Number.isSafeInteger(code) || code < 0 || code > 0xffffffff)) return null;
 						state.exitCode = code;
 					}
 					for (const key of ["timedOut", "cancelled", "captureComplete"] as const) {
@@ -440,6 +499,36 @@ export class BlobStore {
 			return commandState !== null;
 		});
 		return result && commandState ? { ...result, invalidUtf8: !isValidUtf8(result.bytes), commandState } : null;
+	}
+
+	/** Without a handle, always verify the current archive fully. A handle explicitly
+	 * continues the earlier verified bytes and is bound to this store, ref and scope.
+	 * Expired/evicted handles never silently select a different view. */
+	pagingSnapshot(ref: string, handle?: string): { handle: string; view: VerifiedBlobSnapshot } | null {
+		const now = performance.now();
+		for (const [key, value] of this.snapshots) if (value.expires <= now) {
+			this.snapshots.delete(key); this.snapshotBytes -= value.view.retainedBytes;
+		}
+		if (handle !== undefined) {
+			if (!/^page_v1_[0-9a-f]{32}$/.test(handle)) return null;
+			const value = this.snapshots.get(handle);
+			if (!value || value.ref !== ref) return null;
+			// LRU ordering does not extend the fixed snapshot lifetime.
+			this.snapshots.delete(handle); this.snapshots.set(handle, value);
+			return { handle, view: value.view };
+		}
+		const verified = this.inspect(ref);
+		if (!verified) return null;
+		const view = new VerifiedBlobSnapshot(verified);
+		while (this.snapshots.size >= ARCHIVE_SNAPSHOT_LIMITS.maxEntries || this.snapshotBytes + view.retainedBytes > ARCHIVE_SNAPSHOT_LIMITS.maxBytes) {
+			const oldest = this.snapshots.entries().next().value;
+			if (!oldest) return null;
+			this.snapshots.delete(oldest[0]); this.snapshotBytes -= oldest[1].view.retainedBytes;
+		}
+		const key = `page_v1_${randomBytes(16).toString("hex")}`;
+		this.snapshots.set(key, { ref, view, expires: now + ARCHIVE_SNAPSHOT_LIMITS.ttlMs });
+		this.snapshotBytes += view.retainedBytes;
+		return { handle: key, view };
 	}
 
 	/** Compatibility text API: binary archives are never silently decoded with replacements. */

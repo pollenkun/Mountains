@@ -175,12 +175,28 @@ export interface AgentSnapshotV1 {
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((resolve) => {
-		const t = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => {
-			clearTimeout(t);
-			resolve();
-		});
+		if (signal?.aborted) { resolve(); return; }
+		const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
 	});
+
+/** Abandoned approval UIs must not keep a cancelled run alive or approve a later operation. */
+function cancellableApproval(ask: () => Promise<"allow" | "deny">, signal: AbortSignal): Promise<"allow" | "deny"> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) { resolve("deny"); return; }
+		let settled = false;
+		const finish = (answer: "allow" | "deny", error?: unknown) => {
+			if (settled) return;
+			settled = true; signal.removeEventListener("abort", abort);
+			if (error !== undefined) reject(error); else resolve(answer);
+		};
+		const abort = () => finish("deny");
+		signal.addEventListener("abort", abort, { once: true });
+		try { Promise.resolve(ask()).then(answer => finish(signal.aborted ? "deny" : answer), error => finish("deny", error)); }
+		catch (error) { finish("deny", error); }
+	});
+}
 
 function sha256(s: string): string {
 	return createHash("sha256").update(s).digest("hex");
@@ -284,8 +300,9 @@ export class AgentSession {
 		if (options.billingCurrency !== undefined) {
 			if (options.billingCurrency !== "USD" && options.billingCurrency !== "CNY") throw new Error("计费币种只能是 USD 或 CNY");
 			if (!pricingFor(options.model, options.billingCurrency)) throw new Error("所选模型没有该币种的价格");
-			if (options.budget.currency !== options.billingCurrency) throw new Error("计费币种必须与预算账本币种一致");
 		}
+		const billingCurrency = currencyOf(options.model, options.billingCurrency);
+		if (billingCurrency !== undefined && options.budget.currency !== billingCurrency) throw new Error("计费币种必须与预算账本币种一致");
 		if (options.requestGuard !== undefined && typeof options.requestGuard !== "boolean") throw new Error("requestGuard 必须是布尔值");
 		if (options.exactInputPreflight !== undefined && typeof options.exactInputPreflight !== "boolean") throw new Error("exactInputPreflight 必须是布尔值");
 		if (options.exactInputPreflight && !exactInputIdentity(options.adapter)) throw new Error("精确输入预检需要由受信工厂创建的适配器");
@@ -300,6 +317,9 @@ export class AgentSession {
 		this.options = options;
 		this.sessionId = options.sessionId ?? `ses_${randomUUID().slice(0, 12)}`;
 		this.workspace = new Workspace(options.workspace);
+		for (const path of [options.dataDir, options.appDataDir, options.budget.ledgerPath]) {
+			if (path !== undefined && this.workspace.contains(path)) throw new Error("运行数据、费用账本与检查点必须存放在任务工作区之外");
+		}
 		this.blobs = new BlobStore(options.archiveDir ?? join(options.dataDir, "blobs"), {
 			workspaceRoot: this.workspace.root, sessionId: this.sessionId,
 			allowWorkspaceHistory: false,
@@ -511,7 +531,8 @@ export class AgentSession {
 			...payload,
 		} as unknown as EngineEvent;
 		if (type !== "message.delta") this.recorder.write("engine.event", event);
-		this.options.onEvent?.(event);
+		// Every outward event can become a log or UI message; keep raw values in execution only.
+		this.options.onEvent?.(redactValue(event) as EngineEvent);
 	}
 
 	async run(task: string, signal: AbortSignal = new AbortController().signal): Promise<RunSummary> {
@@ -663,6 +684,7 @@ export class AgentSession {
 			try { await this.compactContext(runId, turnId, totals, limits, signal, false); }
 			catch (err) {
 				if (err instanceof ContextPublicationError) return finish("limit", `上下文未发布：${err.code}: ${err.message}`);
+				if (err instanceof BudgetExceeded) return finish("limit", err.message);
 				throw err;
 			}
 			try { prepared = preparePlan(); }
@@ -820,6 +842,8 @@ export class AgentSession {
 			if (runAuthorizationRevision !== this.authorizationRevision) return finish("limit", "用户已发来新指令，旧模型响应不再执行操作");
 
 			const msg = resp.message;
+			try { this.builder.validateAssistantToolCalls(msg); }
+			catch (error) { return finish("failed", `模型工具调用无效：${error instanceof Error ? error.message : String(error)}`); }
 			if (msg.content) this.indexVisible(msg.content, { role: "assistant" });
 			if (this.sessionIndexFailure) return finish("limit", this.sessionIndexFailure);
 			this.builder.appendAssistant(msg);
@@ -1031,6 +1055,13 @@ export class AgentSession {
 		}
 		const requestId = `${runId}-${turnId}-compact${guarded ? `-${randomUUID()}` : ""}`;
 		const inputBound = guarded ? Buffer.byteLength(JSON.stringify({ system: plan.system, tools: plan.tools, messages }), "utf8") + 4096 : plan.totalTokensEst;
+		const blocked = signal.aborted ? "cancelled"
+			: totals.requests >= (limits.maxRequests ?? Number.POSITIVE_INFINITY) ? "request-limit"
+			: guarded && (totals.input + totals.cacheRead + inputBound > limits.maxInputTokens || totals.output + o.maxTokens > limits.maxOutputTokens) ? "token-limit" : null;
+		if (blocked) {
+			this.recorder.write("context.compaction-request", { runId, sent: false, reason: blocked });
+			return null;
+		}
 		try {
 			const worst = worstCaseCost(o.model, inputBound, o.maxTokens, o.billingCurrency);
 			if (guarded) o.budget.reserve({ runId, requestId, amount: worst }, limits.maxCost);
@@ -1058,9 +1089,15 @@ export class AgentSession {
 				error: { message: "模型接口异常，扣费状态未知", retryable: false }, retryAfterMs: null, aborted: signal.aborted,
 			};
 		}
-		this.account(runId, turnId, requestId, 1, resp, plan, null, totals, inputBound);
+		let partial: boolean;
+		try { partial = this.account(runId, turnId, requestId, 1, resp, plan, null, totals, inputBound, "compaction"); }
+		catch (error) {
+			if (!guarded) throw error;
+			throw new BudgetExceeded("压缩请求已发生，但费用超出预留或记账失败；已停止后续操作，请检查账本");
+		}
 		const usable = resp.ok && !resp.message.toolCalls.length && resp.finishReason !== "length" && resp.message.content.trim().length > 0;
 		this.recorder.write("context.compaction-request", { runId, requestId, sent: true, ok: resp.ok, usable, finishReason: resp.finishReason, toolCalls: resp.message.toolCalls.length, chars: resp.message.content.length, usage: resp.usage });
+		if (guarded && partial) throw new BudgetExceeded("压缩请求用量不完整，已保守计费并停止后续操作");
 		return usable ? resp.message.content : null;
 	}
 
@@ -1090,6 +1127,7 @@ export class AgentSession {
 		firstChanged: string | null,
 		totals: RunTotals,
 		inputBound = plan.totalTokensEst,
+		purpose: "agent-turn" | "compaction" = "agent-turn",
 	): boolean {
 		const o = this.options;
 		const guarded = o.requestGuard === true;
@@ -1139,7 +1177,7 @@ export class AgentSession {
 			requestId,
 			attempt,
 			isRetry: attempt > 1,
-			purpose: "agent-turn",
+			purpose,
 			model: resp.responseModel,
 			startedAt: new Date(resp.startedAt).toISOString(),
 			firstTokenAt: resp.firstByteAt ? new Date(resp.firstByteAt).toISOString() : null,
@@ -1248,7 +1286,7 @@ export class AgentSession {
 						// are evidence for review, not an unconditional dangerous-command veto.
 						approve: async (req) => {
 							if (stale() || signal.aborted || manualFallback && (req.toolCallId !== call.id || !manualFallback())) return "deny";
-							const answer = this.options.modelApproval && decision?.decision === "allow" ? "allow" : await this.approve(runId, req, manualFallback);
+							const answer = this.options.modelApproval && decision?.decision === "allow" ? "allow" : await this.approve(runId, req, signal, manualFallback);
 							humanApproved = answer === "allow";
 							return stale() || signal.aborted || manualFallback && !manualFallback() ? "deny" : answer;
 						},
@@ -1290,13 +1328,13 @@ export class AgentSession {
 		return out;
 	}
 
-	private async approve(runId: string, req: ApprovalRequest, manualFallback?: () => boolean): Promise<"allow" | "deny"> {
+	private async approve(runId: string, req: ApprovalRequest, signal: AbortSignal, manualFallback?: () => boolean): Promise<"allow" | "deny"> {
 		const policy = this.options.approval ?? BENCH_APPROVAL;
 		const rule = manualFallback ? null : matchRule(policy, req);
 		this.emit(runId, "approval.requested", { toolCallId: req.toolCallId, command: req.command, cwd: req.cwd, risk: req.risk, explanation: req.explanation, source: "human" });
 		let decision: "allow" | "deny";
 		if (rule) decision = rule.decision;
-		else if ((manualFallback || policy.fallback === "ask") && this.options.askApproval) decision = await this.options.askApproval(req);
+		else if ((manualFallback || policy.fallback === "ask") && this.options.askApproval) decision = await cancellableApproval(() => this.options.askApproval!(req), signal);
 		else decision = "deny";
 		if (decision === "allow" && manualFallback && !manualFallback()) decision = "deny";
 		this.emit(runId, "approval.resolved", { toolCallId: req.toolCallId, decision, rule: rule?.id ?? null });

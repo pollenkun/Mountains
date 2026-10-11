@@ -71,7 +71,10 @@ export function normalizeUsage(provider: ProviderId, raw: RawUsage | null | unde
 		total: total ?? null,
 		partial: false,
 	};
-	u.partial = u.input === null || u.cacheRead === null || u.output === null;
+	// Native hit/miss fields must still agree with the provider's prompt total.
+	// A matching total_tokens alone cannot make contradictory cheaper parts known.
+	u.partial = u.input === null || u.cacheRead === null || u.output === null
+		|| prompt !== undefined && miss !== undefined && hit !== undefined && miss + hit + (write ?? 0) !== prompt;
 	return u;
 }
 

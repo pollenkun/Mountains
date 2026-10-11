@@ -121,7 +121,7 @@ test("missing fields stay missing while explicit null and false are preserved", 
 test("invalid state types fail closed before payload reads", (t) => {
 	const { store, dir } = setup();
 	const badStates = [
-		{ exitCode: "0" }, { exitCode: -1 }, { exitCode: 0.5 }, { exitCode: 0x80000000 },
+		{ exitCode: "0" }, { exitCode: -1 }, { exitCode: 0.5 }, { exitCode: 0x100000000 },
 		{ timedOut: 0 }, { cancelled: "false" }, { captureComplete: {} },
 		{ signal: false }, { signal: "" }, { signal: "x".repeat(65) },
 	];

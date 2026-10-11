@@ -77,6 +77,7 @@ interface BudgetState {
 	taskLimits: Map<string, number>;
 	overruns: Set<string>;
 	claimedRuns: Set<string>;
+	reservedRuns: Set<string>;
 }
 
 const keyOf = (...parts: string[]): string => JSON.stringify(parts);
@@ -111,6 +112,7 @@ export class BudgetGuard {
 	readonly currency: string;
 	readonly ledgerPath: string;
 	private readonly trackedRuns = new Set<string>();
+	private replayCache: { bytes: Buffer; state: BudgetState } | undefined;
 
 	constructor(opts: { globalLimit: number; currency?: string; ledgerPath: string }) {
 		this.globalLimit = money(opts.globalLimit, "全局预算");
@@ -147,9 +149,16 @@ export class BudgetGuard {
 	}
 
 	private readState(): BudgetState {
-		const state: BudgetState = { spent: new Map(), runSpent: new Map(), legacyRequests: new Map(), reservations: new Map(), scopes: new Map(), taskLimits: new Map(), overruns: new Set(), claimedRuns: new Set() };
-		if (!existsSync(this.ledgerPath)) return state;
-		for (const line of readFileSync(this.ledgerPath, "utf8").split("\n")) {
+		// Read and compare every byte while holding the original lock. Metadata alone cannot
+		// authenticate an externally mutable journal; only an identical prefix is reusable.
+		const bytes = existsSync(this.ledgerPath) ? readFileSync(this.ledgerPath) : Buffer.alloc(0);
+		const cached = this.replayCache;
+		if (cached?.bytes.equals(bytes)) return cached.state;
+		const extend = cached && cached.bytes.at(-1) === 10 && bytes.length >= cached.bytes.length && bytes.subarray(0, cached.bytes.length).equals(cached.bytes);
+		const state: BudgetState = extend ? cached.state : { spent: new Map(), runSpent: new Map(), legacyRequests: new Map(), reservations: new Map(), scopes: new Map(), taskLimits: new Map(), overruns: new Set(), claimedRuns: new Set(), reservedRuns: new Set() };
+		// Failed parsing must never expose a partly advanced cache on the next call.
+		this.replayCache = undefined;
+		for (const line of (extend ? bytes.subarray(cached.bytes.length) : bytes).toString("utf8").split("\n")) {
 			if (!line.trim()) continue;
 			const row = JSON.parse(line) as Record<string, unknown>;
 			if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("预算账本记录无效");
@@ -169,7 +178,7 @@ export class BudgetGuard {
 			if (row.kind === "budget.run-claim") {
 				const run = keyOf(currency, runId);
 				if (state.claimedRuns.has(run) || state.legacyRequests.has(run)
-					|| [...state.reservations.values()].some((r) => r.currency === currency && r.runId === runId)) throw new Error("运行启动记录重复或晚于请求");
+					|| state.reservedRuns.has(run)) throw new Error("运行启动记录重复或晚于请求");
 				state.claimedRuns.add(run);
 				continue;
 			}
@@ -187,6 +196,7 @@ export class BudgetGuard {
 				state.taskLimits.set(run, taskLimit);
 				if (scope) state.scopes.set(keyOf(currency, scope.key), scope);
 				state.reservations.set(id, { runId, requestId, amount, currency, taskLimit, ...(scope ? { scope } : {}) });
+				state.reservedRuns.add(run);
 			} else if (row.kind === "budget.settle") {
 				const reservation = state.reservations.get(id);
 				if (!reservation || reservation.settlement) throw new Error("结算缺少预留或重复结算");
@@ -200,6 +210,7 @@ export class BudgetGuard {
 				add(state.runSpent, keyOf(currency, runId), amount);
 			} else throw new Error("未知预算台账记录类型");
 		}
+		this.replayCache = { bytes, state };
 		return state;
 	}
 
