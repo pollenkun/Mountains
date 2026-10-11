@@ -11,19 +11,24 @@ const nativeHost: IdentityHost = {
 	},
 };
 
-/** Existing, real paths only. Case-folded path text cannot prove Windows ancestry. */
-export function hasPathAncestor(root: string, path: string, host: IdentityHost = nativeHost): boolean {
+/** Existing, real paths only. Missing identity is not evidence of being outside. */
+export function pathAncestry(root: string, path: string, host: IdentityHost = nativeHost): "inside" | "outside" | "unknown" {
 	try {
 		const expected = host.identity(root);
-		if (!expected.directory || expected.ino === 0n) return false;
+		if (!expected.directory || expected.ino === 0n) return "unknown";
 		let current = path;
 		for (;;) {
 			const actual = host.identity(current);
-			if (actual.ino === 0n) return false;
-			if (actual.directory && actual.dev === expected.dev && actual.ino === expected.ino) return true;
+			if (actual.ino === 0n) return "unknown";
+			if (actual.directory && actual.dev === expected.dev && actual.ino === expected.ino) return "inside";
 			const parent = host.parent(current);
-			if (parent === current) return false;
+			if (parent === current) return "outside";
 			current = parent;
 		}
-	} catch { return false; }
+	} catch { return "unknown"; }
+}
+
+/** Case-folded path text cannot prove Windows ancestry; uncertainty fails closed. */
+export function hasPathAncestor(root: string, path: string, host: IdentityHost = nativeHost): boolean {
+	return pathAncestry(root, path, host) === "inside";
 }

@@ -138,7 +138,7 @@ for (const scenario of scenarios) {
 		let checks = 0;
 		f.ctx.assertExecutionAllowed = () => { checks++; if (!authorized) throw new Error(revoked); };
 		f.ctx.beforeWrite = async path => {
-			assert.equal(path, f.path);
+			assert.equal(path, join(f.ctx.workspace.root, f.args.path));
 			f.unchanged(); entered.resolve(); await checkpoint.promise;
 		};
 		const running = f.tool.execute(f.args, f.ctx);

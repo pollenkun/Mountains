@@ -165,6 +165,7 @@ else{const c=spawn(process.execPath,[__filename,mode,pidFile,'leaf'],{detached:t
 	assert.equal(result.details.processTreeCleanupMode, "systemd-scope", result.modelContent);
 	assert.equal(result.details.processTreeCleanupConfirmed, true, result.modelContent);
 	assert.equal(result.ok, mode !== "cancel", result.modelContent);
+	if (mode === "cancel") assert.equal(result.details.signal, "SIGTERM", "scope TERM must preserve the cooperative root outcome");
 	const pid = Number(readFileSync(pidFile, "utf8"));
 	await waitFor(() => !linuxProcessAlive(pid), "scope-owned detached descendant must stop");
 	assert.equal(linuxProcessAlive(unrelated.pid!), true, "unrelated same-executable process must survive");
@@ -232,4 +233,72 @@ for (const protocol of ["oversized", "extra-key", "failure-text"] as const) test
 		.execute({ argv: [process.execPath, "-e", "process.stdout.write('target only')"] }, f.ctx);
 	assert.equal(result.ok, false); assert.equal(result.details.exitCode, null); assert.match(result.modelContent, /failed to start/);
 	assert.doesNotMatch(result.modelContent, /PRIVATE_RECORD/); assert.equal(f.ctx.blobs!.get(result.fullOutputRef!), "target only");
+});
+
+/** Simulate only scope-wide signal delivery using this test's one recorded
+ * payload PID. The helper and payload themselves are real native processes. */
+function gracefulScope(t: TestContext, pidfile: string, slowTerm = false) {
+	const scope = simulatedScope(t), query = scope.host.run!;
+	const signals: { signal: string; at: number }[] = [];
+	let wrapper: ChildProcess | undefined, payloadPid: number | undefined;
+	t.after(() => {
+		if (payloadPid) { try { if (readFileSync(`/proc/${payloadPid}/cmdline`, "utf8").includes(pidfile)) process.kill(payloadPid, "SIGKILL"); } catch {} }
+	});
+	const launch = scope.host.spawn!;
+	scope.host.spawn = ((...args: Parameters<typeof spawn>) => { wrapper = Reflect.apply(launch, undefined, args); return wrapper; }) as typeof spawn;
+	scope.host.run = async (command, args, env) => {
+		if (args[1] !== "kill") return query(command, args, env);
+		const signal = args.find(arg => arg.startsWith("--signal="))!.slice("--signal=".length) as NodeJS.Signals;
+		signals.push({ signal, at: Date.now() });
+		if (signal === "SIGTERM") wrapper?.kill(signal);
+		if (existsSync(pidfile)) {
+			const pid = payloadPid = Number(readFileSync(pidfile, "utf8"));
+			try { process.kill(pid, signal); } catch {}
+		}
+		if (signal === "SIGTERM") return slowTerm ? new Promise(() => {}) : state("1");
+		return query(command, args, env);
+	};
+	return { ...scope, delivered: signals };
+}
+
+test("scope TERM grace preserves a cooperative target's real signal while the wrapper survives TERM", { skip: process.platform !== "linux", timeout: 5000 }, async t => {
+	const f = fixture(t), pidfile = join(f.root, "payload.pid"), scope = gracefulScope(t, pidfile);
+	const resultPromise = createCommandTool(DEFAULT_COMMAND_LIMITS, {}, { platform: "linux", probeLinuxScope: async () => true, linuxScope: scope.host })
+		.execute({ argv: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(pidfile)},String(process.pid));setInterval(()=>{},1000);`] }, f.ctx);
+	await waitFor(() => existsSync(pidfile), "payload must be ready");
+	f.abort.abort(); const result = await resultPromise;
+	assert.equal(result.details.cancelled, true); assert.equal(result.details.signal, "SIGTERM", result.modelContent);
+	assert.equal(result.details.processTreeCleanupConfirmed, true); assert.equal(result.details.exitCode, null);
+	assert.deepEqual(scope.delivered.map(item => item.signal).slice(0, 2), ["SIGTERM", "SIGKILL"]);
+});
+
+test("scope KILL deadline is not delayed by a hanging TERM query or a later cancellation", { skip: process.platform !== "linux", timeout: 5000 }, async t => {
+	const f = fixture(t), pidfile = join(f.root, "payload.pid"), scope = gracefulScope(t, pidfile, true);
+	const scoped = spawnLinuxScope(process.execPath, ["-e", `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(pidfile)},String(process.pid));setInterval(()=>{},1000);`], { cwd: f.root, env: {} }, scope.host);
+	scoped.stdout.resume(); scoped.stderr.resume();
+	await waitFor(() => existsSync(pidfile), "resistant payload must be ready");
+	const first = scoped.linuxScope.stop(120); await delay(50); const later = scoped.linuxScope.stop(1000);
+	assert.equal(later, first, "subsequent stop shares the first deadline");
+	assert.equal((await first).confirmed, true);
+	const term = scope.delivered.find(item => item.signal === "SIGTERM")!, kill = scope.delivered.find(item => item.signal === "SIGKILL")!;
+	assert.ok(kill.at - term.at >= 90, "TERM receives the requested grace");
+	assert.ok(kill.at - term.at < 650, `KILL must keep the first deadline, elapsed ${kill.at - term.at}ms`);
+	assert.equal(linuxProcessAlive(Number(readFileSync(pidfile, "utf8"))), false);
+});
+
+test("scope output cap retains POSIX grace and records a later abort without restarting cleanup", { skip: process.platform !== "linux", timeout: 5000 }, async t => {
+	const f = fixture(t), pidfile = join(f.root, "payload.pid"), scope = gracefulScope(t, pidfile);
+	let abortTimer: NodeJS.Timeout | undefined;
+	const query = scope.host.run!;
+	scope.host.run = async (command, args, env) => {
+		if (args.includes("--signal=SIGTERM")) abortTimer = setTimeout(() => f.abort.abort(), 100);
+		return query(command, args, env);
+	};
+	const result = await createCommandTool({ ...DEFAULT_COMMAND_LIMITS, captureMaxBytes: 1024 }, {}, { platform: "linux", probeLinuxScope: async () => true, linuxScope: scope.host })
+		.execute({ argv: [process.execPath, "-e", `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(pidfile)},String(process.pid));process.stdout.write(Buffer.alloc(4096));setInterval(()=>{},1000);`] }, f.ctx);
+	clearTimeout(abortTimer);
+	assert.equal(result.details.outputLimited, true); assert.equal(result.details.cancelled, true); assert.equal(result.details.signal, "SIGKILL");
+	assert.equal(scope.delivered.filter(item => item.signal === "SIGTERM").length, 1);
+	const term = scope.delivered.find(item => item.signal === "SIGTERM")!, kill = scope.delivered.find(item => item.signal === "SIGKILL")!;
+	assert.ok(kill.at - term.at >= 900); assert.ok(kill.at - term.at < 1700);
 });

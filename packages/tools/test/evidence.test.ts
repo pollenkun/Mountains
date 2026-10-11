@@ -139,6 +139,22 @@ describe("immutable evidence", () => {
 		assert.equal((await expand.execute({ ref }, ctx)).ok, false);
 	});
 
+	test("native Windows short-name workspace scopes and canonical tool roots share only their own archives", { skip: process.platform !== "win32" }, async t => {
+		const { root, dir, workspaceRoot, blobs, ctx } = setup();
+		if (!/~\d/i.test(workspaceRoot) || workspaceRoot === ctx.workspace.root) { t.skip("the native TEMP path exposes no distinct 8.3 alias"); return; }
+		const ref = blobs.put("scoped original bytes\r\n", { kind: "raw" });
+		assert.equal(blobs.matchesWorkspace(workspaceRoot), true);
+		assert.equal(blobs.matchesWorkspace(ctx.workspace.root), true);
+		assert.equal(body((await expand.execute({ ref }, ctx)).modelContent), "scoped original bytes\r\n");
+		const restarted = new BlobStore(blobs.dir, { workspaceRoot: ctx.workspace.root, sessionId: "session-a" });
+		assert.equal(restarted.get(ref), "scoped original bytes\r\n");
+		assert.equal(restarted.put("scoped original bytes\r\n", { kind: "raw" }), ref, "alias spelling cannot change archive identity");
+		assert.equal(new BlobStore(dir, { workspaceRoot, sessionId: "session-b" }).get(ref), null);
+		const elsewhere = join(root, "different-workspace"); mkdirSync(elsewhere);
+		assert.equal(restarted.matchesWorkspace(elsewhere), false);
+		assert.equal(new BlobStore(dir, { workspaceRoot: elsewhere, sessionId: "session-a" }).get(ref), null);
+	});
+
 	test("corruption and oversized archives cannot publish or recover references", async () => {
 		const { dir, blobs, ctx } = setup();
 		const ref = blobs.put("untampered", { kind: "raw" });

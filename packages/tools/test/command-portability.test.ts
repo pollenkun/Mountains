@@ -25,7 +25,7 @@ test("native command execution preserves argument boundaries, Unicode, cwd and l
 	const result = await createCommandTool().execute({ argv: [process.execPath, "-e", script, ...values], cwd: ctx.workspace.rel(cwd), timeoutMs: 20_000 }, ctx);
 	assert.equal(result.ok, true, result.modelContent);
 	const observed = JSON.parse(readFileSync(join(cwd, "observed.json"), "utf8")) as { cwd: string; args: string[] };
-	assert.equal(realpathSync(observed.cwd), cwd);
+	assert.equal(ctx.workspace.resolve(observed.cwd).abs, ctx.workspace.resolve(cwd).abs);
 	assert.deepEqual(observed.args, values);
 	assert.match(result.modelContent, /native stdout/);
 	assert.match(result.modelContent, /native stderr/);

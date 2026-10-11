@@ -9,7 +9,8 @@ import { createCommandTool } from "../src/command.ts";
 import type { ToolContext } from "../src/types.ts";
 import { FileStateTracker, Workspace } from "../src/workspace.ts";
 
-// Cancellation uses Unix process groups on macOS/Linux. This adds no Windows failure.
+// Exercise the POSIX process-group fallback explicitly; native scope ownership
+// and graceful cancellation are covered separately in linux-scope.test.ts.
 const unsupportedPlatform = process.platform !== "darwin" && process.platform !== "linux";
 
 interface ProcessState {
@@ -106,7 +107,7 @@ writeFileSync(join(root, ["parent.pid", "child.pid", "grandchild.pid"][stage]), 
 		const args = entrypoint === "argv"
 			? { argv, timeoutMs: 10_000 }
 			: { shellScript: `printf '%s\\n' "$$" > ${quoteShell(join(root, "shell.pid"))}\n${argv.map(quoteShell).join(" ")} &\nwait`, timeoutMs: 10_000 };
-		running = createCommandTool().execute(args, ctx);
+		running = createCommandTool(undefined, {}, { probeLinuxScope: async () => false }).execute(args, ctx);
 		await waitFor(() => pidFiles.every(existsSync), "parent, child and grandchild must start before cancellation");
 		const pids = recordedPids();
 		assert.equal(new Set(pids).size, pids.length);

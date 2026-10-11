@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { win32 } from "node:path";
 import { test } from "node:test";
-import { hasPathAncestor } from "../src/path-identity.ts";
+import { hasPathAncestor, pathAncestry } from "../src/path-identity.ts";
 
 function windowsFixture() {
 	const ids = new Map<string, bigint>([
@@ -37,4 +37,17 @@ test("missing or unusable filesystem identities fail closed", () => {
 	assert.equal(hasPathAncestor("C:\\parent\\Repo", "C:\\parent\\Repo", {
 		...host, identity: () => ({ dev: 10n, ino: 0n, directory: true }),
 	}), false);
+});
+
+test("ancestry distinguishes proven outside paths from zero or unreadable identities", () => {
+	const host = windowsFixture();
+	assert.equal(pathAncestry("C:\\parent\\Repo", "C:\\PARENT\\REPO", host), "inside");
+	assert.equal(pathAncestry("C:\\parent\\Repo", "C:\\parent\\repo", host), "outside");
+	assert.equal(pathAncestry("C:\\parent\\Repo", "C:\\missing", host), "unknown");
+	assert.equal(pathAncestry("C:\\parent\\Repo", "C:\\parent\\Repo", {
+		...host, identity: () => ({ dev: 10n, ino: 0n, directory: true }),
+	}), "unknown");
+	assert.equal(pathAncestry("C:\\parent\\Repo", "C:\\parent\\Repo", {
+		...host, identity: () => { throw new Error("identity access denied"); },
+	}), "unknown");
 });

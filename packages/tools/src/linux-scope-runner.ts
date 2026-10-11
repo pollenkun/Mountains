@@ -5,6 +5,9 @@
 export const LINUX_SCOPE_RUNNER = String.raw`
 const fs = require('node:fs');
 const {spawn} = require('node:child_process');
+// TERM is delivered to the entire scope. Keep the trusted wrapper alive long
+// enough to record the target's real outcome; SIGKILL still ends the scope.
+process.on('SIGTERM', () => {});
 const [request, entered, failure, outcome, cancelled, unit] = process.argv.slice(1);
 const fail = () => {
   try { fs.writeFileSync(failure, 'Linux scope bootstrap failed before target startup\n', {flag:'wx',mode:0o600}); } catch {}

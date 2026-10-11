@@ -19,7 +19,7 @@ export interface LinuxScopeHost {
 export interface LinuxScopeCleanup { confirmed: boolean; error?: string }
 export interface LinuxScopeProcess extends ChildProcessWithoutNullStreams {
 	linuxScope: {
-		stop(): Promise<LinuxScopeCleanup>;
+		stop(graceMs?: number): Promise<LinuxScopeCleanup>;
 		finish(): Promise<LinuxScopeCleanup>;
 		startupError(): string | undefined;
 		outcome(): { code: number | null; signal: NodeJS.Signals | null } | undefined;
@@ -143,13 +143,15 @@ export function spawnLinuxScope(program: string, args: string[], options: { cwd:
 	let finished: Promise<LinuxScopeCleanup> | undefined;
 	let requested = false;
 	let directExited = false;
+	let resolveDirectExit!: () => void;
+	const directExit = new Promise<void>(resolve => { resolveDirectExit = resolve; });
 	const killArgs = ["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", unit];
 	const finalize = () => {
 		(host.runSync ?? spawnSync)(systemctl(host), killArgs, { env: environment, stdio: "ignore", timeout: 1500, killSignal: "SIGKILL" });
 	};
 	registerOwner(finalize);
-	child.once("error", () => { if (child.pid === undefined) directExited = true; });
-	child.once("exit", () => { directExited = true; });
+	child.once("error", () => { if (child.pid === undefined) { directExited = true; resolveDirectExit(); } });
+	child.once("exit", () => { directExited = true; resolveDirectExit(); });
 	const startupError = () => {
 		if (startupChecked) return startupFailure;
 		startupChecked = true;
@@ -169,13 +171,22 @@ export function spawnLinuxScope(program: string, args: string[], options: { cwd:
 		} catch { return startupFailure = "Linux scope target outcome is invalid"; }
 		return undefined;
 	};
-	const cleanup = (cancel: boolean) => finished ??= (async (): Promise<LinuxScopeCleanup> => {
+	const cleanup = (cancel: boolean, graceMs = 0) => finished ??= (async (): Promise<LinuxScopeCleanup> => {
 		// Mark request cancellation before signalling: an unconsumed request is an
 		// expected cancellation, not evidence that the payload ran successfully.
 		requested = cancel;
 		if (cancel) { try { writeFileSync(cancelled, "cancelled\n", { flag: "wx", mode: 0o600 }); } catch {} }
 		established ||= existsSync(entered);
 		if (!established && !directExited) { try { child.kill("SIGKILL"); } catch {} }
+		if (cancel && established && !directExited && graceMs > 0) {
+			let graceTimer: NodeJS.Timeout | undefined;
+			const elapsed = new Promise<void>(resolve => { graceTimer = setTimeout(resolve, graceMs); });
+			// Do not await a slow/denied TERM helper before starting the KILL clock.
+			// This cleanup promise is shared, so later aborts cannot reset the grace.
+			void Promise.resolve().then(() => query(systemctl(host), ["--user", "kill", "--kill-whom=all", "--signal=SIGTERM", unit], environment)).catch(() => {});
+			await Promise.race([elapsed, directExit]);
+			clearTimeout(graceTimer);
+		}
 		const deadline = Date.now() + (host.cleanupMs ?? 2500);
 		try { await query(systemctl(host), killArgs, environment); } catch { /* Query below must independently prove empty. */ }
 		while (Date.now() <= deadline) {
@@ -205,6 +216,6 @@ export function spawnLinuxScope(program: string, args: string[], options: { cwd:
 		// not turn an unknown or nonempty range into confirmed cleanup.
 		return { confirmed: false, error: "Linux systemd scope cleanup could not be confirmed" };
 	})();
-	child.linuxScope = { stop: () => cleanup(true), finish: () => cleanup(false), startupError, outcome: () => { startupError(); return rootOutcome; } };
+	child.linuxScope = { stop: (graceMs = 0) => cleanup(true, graceMs), finish: () => cleanup(false), startupError, outcome: () => { startupError(); return rootOutcome; } };
 	return child;
 }

@@ -11,7 +11,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { EngineEvent } from "@mountains/protocol";
 import { AgentSession, BudgetGuard, DEFAULT_LIMITS, type RunSummary, replayAdapterFromRecording } from "@mountains/engine";
@@ -44,10 +44,7 @@ function projectDir(workspaceRoot: string, home = mountainsHome()): string {
 
 function requireExternalStorage(path: string, workspace: string): string {
 	const dest = resolve(path);
-	let ancestor = dest;
-	while (!existsSync(ancestor)) ancestor = dirname(ancestor);
-	const real = resolve(realpathSync(ancestor), relative(ancestor, dest));
-	if (real === workspace || real.startsWith(workspace + sep)) throw new Error("项目记忆与原文档案必须存放在任务工作区之外");
+	if (new Workspace(workspace).contains(dest)) throw new Error("项目记忆与原文档案必须存放在任务工作区之外");
 	return dest;
 }
 

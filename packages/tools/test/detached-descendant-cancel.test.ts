@@ -109,7 +109,8 @@ if (role === "child") spawn(process.execPath, [__filename, root, "grandchild", m
 		root, controller, ctx, report, remember,
 		start(timeoutMs: number) {
 			unrelated = spawn(process.execPath, [fixture, root, "unrelated", mode], { detached: true, stdio: "ignore" });
-			running = createCommandTool().execute({ argv: [process.execPath, fixture, root, "parent", mode], timeoutMs }, ctx);
+			// This fixture asserts direct PPID/PGID ancestry of the observational fallback.
+			running = createCommandTool(undefined, {}, { probeLinuxScope: async () => false }).execute({ argv: [process.execPath, fixture, root, "parent", mode], timeoutMs }, ctx);
 			return running;
 		},
 		async ready() {

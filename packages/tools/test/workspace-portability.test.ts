@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -53,4 +53,37 @@ test("case-sensitive filesystem entries remain distinct rather than being case-f
 	const sibling = join(parent, "workspace"); mkdirSync(sibling);
 	writeFileSync(join(sibling, "file.txt"), "outside case-sensitive sibling");
 	assert.throws(() => workspace.resolve(join(sibling, "file.txt")), /越出工作区/);
+	assert.equal(workspace.contains(join(sibling, "new", "state")), false);
+});
+
+test("physical workspace aliases resolve and relativize existing and missing paths without hiding outside storage", t => {
+	const { parent, root } = fixture(t), workspace = new Workspace(root);
+	const alias = join(parent, "alias");
+	symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+	assert.deepEqual(workspace.resolve(join(alias, "file.txt")), { abs: join(root, "file.txt"), rel: "file.txt" });
+	assert.equal(workspace.rel(join(alias, "file.txt")), "file.txt");
+	assert.equal(workspace.rel(join(alias, "new", "state")), "new/state");
+	assert.deepEqual(workspace.resolve(join(alias, "new", "state"), { forWrite: true }), { abs: join(root, "new", "state"), rel: "new/state" });
+	assert.equal(workspace.contains(join(alias, "new", "state")), true);
+	const outside = join(parent, "outside"); mkdirSync(outside);
+	const escape = join(root, "escape");
+	symlinkSync(outside, escape, process.platform === "win32" ? "junction" : "dir");
+	assert.equal(workspace.contains(join(escape, "new", "state")), false);
+	assert.throws(() => workspace.resolve(join(escape, "new", "state"), { forWrite: true }), /越出工作区/);
+});
+
+test("native Windows short TEMP aliases preserve absolute resolution, relative paths and the storage boundary", { skip: process.platform !== "win32" }, t => {
+	const raw = mkdtempSync(join(tmpdir(), "workspace-short-name-"));
+	t.after(() => rmSync(raw, { recursive: true, force: true }));
+	const root = realpathSync.native(raw);
+	if (!/~\d/i.test(raw) || raw === root) { t.skip("the native TEMP path exposes no distinct 8.3 alias"); return; }
+	writeFileSync(join(raw, "file.txt"), "inside");
+	const workspace = new Workspace(root);
+	assert.equal(new Workspace(raw).root, root);
+	assert.deepEqual(workspace.resolve(join(raw, "file.txt")), { abs: join(root, "file.txt"), rel: "file.txt" });
+	assert.equal(workspace.rel(join(raw, "file.txt")), "file.txt");
+	assert.equal(workspace.rel(join(raw, "new", "state")), "new/state");
+	assert.deepEqual(workspace.resolve(join(raw, "new", "state"), { forWrite: true }), { abs: join(root, "new", "state"), rel: "new/state" });
+	assert.equal(workspace.contains(join(raw, "new", "state")), true, "state cannot evade the inside-workspace guard through a short ancestor name");
+	assert.equal(workspace.contains(join(dirname(raw), "elsewhere", "state")), false);
 });

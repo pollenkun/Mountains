@@ -57,7 +57,7 @@ for (const scenario of cases) {
 		const decision = deferred<"allow">();
 		const order: string[] = [];
 		f.ctx.approve = async (request) => { order.push("approval"); entered.resolve(request); return decision.promise; };
-		f.ctx.beforeWrite = async (path) => { order.push("checkpoint"); assert.equal(path, f.path); f.unchanged(); };
+		f.ctx.beforeWrite = async (path) => { order.push("checkpoint"); assert.equal(path, join(f.ctx.workspace.root, f.rel)); f.unchanged(); };
 		const running = f.tool.execute(f.args, f.ctx);
 		const request = await entered.promise;
 		f.unchanged();

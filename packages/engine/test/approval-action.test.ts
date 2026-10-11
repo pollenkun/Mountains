@@ -66,6 +66,50 @@ test("case-insensitive relative aliases bind existing files and missing paths by
 	assert.ok(missing.bindings.some(binding => binding.role === "target" && binding.kind === "missing"));
 });
 
+test("native Windows short absolute aliases bind existing and missing targets without changing original arguments", { skip: process.platform !== "win32" }, t => {
+	const { base, root, workspace } = fixture(t);
+	const alias = join(base, "project");
+	if (!/~\d/i.test(alias) || alias === root) { t.skip("the native TEMP path exposes no distinct 8.3 alias"); return; }
+	writeFileSync(join(root, "a.txt"), "original");
+	const args = { path: join(alias, "a.txt"), content: "next" };
+	const before = snapshotApprovalAction(workspace, "file_write", args);
+	assert.ok(before.bindings.some(binding => binding.role === "target" && binding.path === join(root, "a.txt") && binding.sha256));
+	assert.equal(before.fingerprint, snapshotApprovalAction(workspace, "file_write", args).fingerprint);
+	assert.notEqual(before.argsSha256, snapshotApprovalAction(workspace, "file_write", { ...args, path: join(root, "a.txt") }).argsSha256);
+	const missing = snapshotApprovalAction(workspace, "file_write", { path: join(alias, "new", "file.txt"), content: "new" });
+	assert.ok(missing.bindings.some(binding => binding.role === "target" && binding.path === join(root, "new", "file.txt") && binding.kind === "missing"));
+});
+
+test("physical aliases into a workspace subdirectory bind prefix and suffix links and detect retargeting", t => {
+	const { base, root, workspace } = fixture(t);
+	for (const name of ["first", "second"]) {
+		mkdirSync(join(root, name));
+		writeFileSync(join(root, name, "a.txt"), "same bytes");
+		writeFileSync(join(root, name, "b.txt"), "same bytes");
+	}
+	const alias = join(base, "external-alias");
+	symlinkSync(join(root, "first"), alias, process.platform === "win32" ? "junction" : "dir");
+	symlinkSync("a.txt", join(root, "first", "suffix-link"));
+	const args = { path: join(alias, "suffix-link"), content: "next" };
+	assert.equal(workspace.resolve(args.path).abs, join(root, "first", "a.txt"));
+	const before = snapshotApprovalAction(workspace, "file_write", args);
+	assert.ok(before.bindings.some(binding => binding.role === "symlink" && binding.path === alias));
+	assert.ok(before.bindings.some(binding => binding.role === "symlink" && binding.path === join(root, "first", "suffix-link")));
+	assert.ok(before.bindings.some(binding => binding.role === "parent" && binding.path === join(root, "first") && binding.entriesSha256));
+	assert.ok(!before.bindings.some(binding => binding.kind === "directory" && binding.path === base), "outside directory entries must not be enumerated");
+	assert.equal(before.fingerprint, snapshotApprovalAction(workspace, "file_write", args).fingerprint);
+	unlinkSync(join(root, "first", "suffix-link")); symlinkSync("b.txt", join(root, "first", "suffix-link"));
+	assert.notEqual(before.fingerprint, snapshotApprovalAction(workspace, "file_write", args).fingerprint, "suffix links remain bound");
+	const missingArgs = { path: join(alias, "new", "file.txt"), content: "new" };
+	const missing = snapshotApprovalAction(workspace, "file_write", missingArgs);
+	assert.ok(missing.bindings.some(binding => binding.role === "target" && binding.kind === "missing" && binding.path === join(root, "first", "new", "file.txt")));
+	unlinkSync(alias); symlinkSync(join(root, "second"), alias, process.platform === "win32" ? "junction" : "dir");
+	assert.notEqual(missing.fingerprint, snapshotApprovalAction(workspace, "file_write", missingArgs).fingerprint, "alias prefix retargeting invalidates approval");
+	const outside = join(base, "outside"); mkdirSync(outside);
+	unlinkSync(alias); symlinkSync(outside, alias, process.platform === "win32" ? "junction" : "dir");
+	assert.throws(() => snapshotApprovalAction(workspace, "file_write", missingArgs), /outside|越出工作区/);
+});
+
 test("same bytes replacing the inode and parent directory identity are both detected", t => {
 	const { root, workspace } = fixture(t);
 	mkdirSync(join(root, "dir")); writeFileSync(join(root, "dir", "a.txt"), "same");

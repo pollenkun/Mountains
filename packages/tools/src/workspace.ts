@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { hasPathAncestor } from "./path-identity.ts";
+import { hasPathAncestor, pathAncestry } from "./path-identity.ts";
 
 export class ToolError extends Error {
 	constructor(message: string) {
@@ -14,19 +14,32 @@ export function sha256(data: string | Uint8Array): string {
 	return createHash("sha256").update(data).digest("hex");
 }
 
+function existingAncestor(path: string): string {
+	let ancestor = path;
+	while (!existsSync(ancestor)) {
+		const parent = dirname(ancestor);
+		if (parent === ancestor) throw new ToolError(`路径没有可访问的祖先：${path}`);
+		ancestor = parent;
+	}
+	return ancestor;
+}
+
+/** Native filesystem spelling, including Windows short names; missing suffixes stay exact. */
+export function canonicalPath(path: string, allowMissing = false): string {
+	const absolute = resolve(path);
+	const ancestor = allowMissing ? existingAncestor(absolute) : absolute;
+	// JavaScript realpath may preserve aliases on case-insensitive filesystems.
+	// Never case-fold: Windows and macOS can also have case-sensitive paths.
+	const real = process.platform === "win32" || process.platform === "darwin" ? realpathSync.native(ancestor) : realpathSync(ancestor);
+	return resolve(real, relative(ancestor, absolute));
+}
+
 /** 工作区边界：所有路径必须落在根目录内，符号链接也不能越界。 */
 export class Workspace {
 	readonly root: string;
 
 	constructor(root: string) {
-		this.root = this.realPath(resolve(root));
-	}
-
-	private realPath(path: string): string {
-		// JavaScript realpath may preserve case-insensitive aliases. Windows and
-		// macOS native resolution asks the filesystem for its actual entry names;
-		// do not case-fold, since either platform can use case-sensitive paths.
-		return process.platform === "win32" || process.platform === "darwin" ? realpathSync.native(path) : realpathSync(path);
+		this.root = canonicalPath(root);
 	}
 
 	private inside(abs: string): boolean {
@@ -38,30 +51,38 @@ export class Workspace {
 		return this.inside(real) && (process.platform !== "win32" || hasPathAncestor(this.root, real));
 	}
 
+	/** Physical containment also accepts aliases and checks parents of missing paths. */
+	contains(path: string): boolean {
+		const real = canonicalPath(path, true);
+		if (!this.inside(real)) return false;
+		if (process.platform !== "win32") return true;
+		const ancestry = pathAncestry(this.root, existingAncestor(real));
+		if (ancestry === "unknown") throw new ToolError("无法确认路径是否位于工作区内");
+		return ancestry === "inside";
+	}
+
 	/** 把模型给出的路径解析为绝对路径并校验边界。forWrite 时允许文件不存在（但父目录必须在工作区内）。 */
 	resolve(p: string, opts: { forWrite?: boolean } = {}): { abs: string; rel: string } {
 		if (typeof p !== "string" || !p.trim()) throw new ToolError("路径不能为空");
 		const candidate = isAbsolute(p) ? resolve(p) : resolve(this.root, p);
-		if (!this.inside(candidate)) throw new ToolError(`路径越出工作区：${p}`);
 		let real: string;
 		if (existsSync(candidate)) {
-			real = this.realPath(candidate);
+			real = canonicalPath(candidate);
 			if (!this.insideExisting(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
 		} else {
-			if (!opts.forWrite) throw new ToolError(`文件不存在：${this.rel(candidate)}`);
 			// 找到最近的已存在祖先，校验它的真实路径
-			let parent = dirname(candidate);
-			while (!existsSync(parent)) parent = dirname(parent);
-			const realParent = this.realPath(parent);
+			const parent = existingAncestor(candidate);
+			const realParent = canonicalPath(parent);
 			if (!this.insideExisting(realParent)) throw new ToolError(`路径越出工作区：${p}`);
 			real = join(realParent, relative(parent, candidate));
+			if (!opts.forWrite) throw new ToolError(`文件不存在：${this.rel(real)}`);
 		}
 		if (!this.inside(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
 		return { abs: real, rel: this.rel(real) };
 	}
 
 	rel(abs: string): string {
-		const r = relative(this.root, abs);
+		const r = relative(this.root, canonicalPath(abs, true));
 		return r === "" ? "." : r.split(sep).join("/");
 	}
 }
@@ -178,20 +199,20 @@ export class BlobStore {
 
 	constructor(dir: string, scope?: BlobScope) {
 		mkdirSync(dir, { recursive: true });
-		this.dir = realpathSync(dir);
-		this.scope = scope ? { ...scope, workspaceRoot: realpathSync(scope.workspaceRoot) } : undefined;
+		this.dir = canonicalPath(dir);
+		this.scope = scope ? { ...scope, workspaceRoot: canonicalPath(scope.workspaceRoot) } : undefined;
 		this.workspaceId = sha256(this.scope?.workspaceRoot ?? this.dir);
 		this.sessionId = sha256(this.scope?.sessionId ?? this.dir).slice(0, 32);
 	}
 
 	matchesWorkspace(root: string): boolean {
-		try { return !this.scope || realpathSync(root) === this.scope.workspaceRoot; }
+		try { return !this.scope || canonicalPath(root) === this.scope.workspaceRoot; }
 		catch { return false; }
 	}
 
 	/** Reject symlinks in every archive-owned component, including the final file. */
 	private checkedPath(parts: string[], create = false): string {
-		if (realpathSync(this.dir) !== this.dir || lstatSync(this.dir).isSymbolicLink()) throw new ToolError("归档目录已改变");
+		if (canonicalPath(this.dir) !== this.dir || lstatSync(this.dir).isSymbolicLink()) throw new ToolError("归档目录已改变");
 		let at = this.dir;
 		for (let i = 0; i < parts.length; i++) {
 			at = join(at, parts[i] as string);
@@ -221,7 +242,7 @@ export class BlobStore {
 		// guess which session owned an object from an old shared archive directory.
 		if (this.scope) return null;
 		const prefix = old[1];
-		if (realpathSync(this.dir) !== this.dir || lstatSync(this.dir).isSymbolicLink()) return null;
+		if (canonicalPath(this.dir) !== this.dir || lstatSync(this.dir).isSymbolicLink()) return null;
 		const folder = join(this.dir, prefix.slice(0, 2));
 		const folderStat = lstatSync(folder);
 		if (!folderStat.isDirectory() || folderStat.isSymbolicLink()) return null;

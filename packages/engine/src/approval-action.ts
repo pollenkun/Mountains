@@ -198,9 +198,53 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 		const lexical = isAbsolute(input) ? resolve(input) : resolve(base, input);
 		if (!inside(lexical)) fail("path is outside workspace");
 		const checked = workspace.resolve(lexical, { forWrite: allowMissing }).abs;
-		const parts = relative(root, lexical).split(sep).filter(Boolean);
-		if (parts.length > APPROVAL_ACTION_LIMITS.pathDepth) fail("path depth exceeds limit");
 		const index = argumentIndex === undefined ? {} : { argumentIndex };
+		let traversal = lexical;
+		const lexicalRelative = relative(root, lexical);
+		if (isAbsolute(lexicalRelative) || lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`)) {
+			// Native short names (or an outside alias into this workspace) need an
+			// in-workspace traversal anchor. Preserve the original suffix, including
+			// its symlinks, instead of collapsing the complete target to `checked`.
+			let anchor = lexical;
+			let anchored = false;
+			for (let depth = 0; depth <= APPROVAL_ACTION_LIMITS.pathDepth; depth++) {
+				const entry = statOrMissing(anchor);
+				let real: string | undefined;
+				if (entry?.isDirectory() || entry?.isSymbolicLink()) {
+					try {
+						const candidate = workspace.resolve(anchor).abs;
+						if (lstatSync(candidate).isDirectory()) real = candidate;
+					} catch { /* Keep looking for an existing in-workspace directory. */ }
+				}
+				if (real !== undefined) {
+					// Bind links in the alias prefix, but never enumerate outside
+					// directories or read outside file contents. These observations
+					// participate in both the fingerprint and the final recheck.
+					let prefix = anchor;
+					for (let prefixDepth = 0; ; prefixDepth++) {
+						if (prefixDepth > APPROVAL_ACTION_LIMITS.pathDepth) fail("alias prefix depth exceeds limit");
+						const prefixStat = statOrMissing(prefix);
+						if (!prefixStat) fail("alias prefix changed during resolution");
+						if (prefixStat.isSymbolicLink()) {
+							remember(prefix, prefixStat);
+							add({ role: "symlink", path: prefix, kind: "symlink", linkTarget: readlinkSync(prefix), ...identity(prefixStat), ...index });
+						}
+						const parent = dirname(prefix);
+						if (parent === prefix) break;
+						prefix = parent;
+					}
+					traversal = resolve(real, relative(anchor, lexical));
+					anchored = true;
+					break;
+				}
+				const parent = dirname(anchor);
+				if (parent === anchor) break;
+				anchor = parent;
+			}
+			if (!anchored) fail("alias has no bounded in-workspace directory anchor");
+		}
+		const parts = relative(root, traversal).split(sep).filter(Boolean);
+		if (parts.length > APPROVAL_ACTION_LIMITS.pathDepth || parts.includes("..")) fail("path depth exceeds limit");
 		let current = root;
 		let stat = lstatSync(current, { bigint: true });
 		if (!stat.isDirectory()) fail("workspace root is not a directory");

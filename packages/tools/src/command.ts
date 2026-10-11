@@ -294,8 +294,8 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 					? (execution.spawnLinuxScope ?? spawnLinuxScope)(prog as string, rest, { cwd, env: environment }, execution.linuxScope) : undefined;
 				const managedChild = jobChild ?? scopeChild;
 				const child = managedChild ?? (execution.spawn ?? spawn)(prog as string, rest, { cwd, detached: true, env: environment, stdio: ["ignore", "pipe", "pipe"] });
-				const managedResult = async (operation: "stop" | "finish"): Promise<WindowsCleanupResult> => {
-					try { return await (jobChild?.windowsJob ?? scopeChild!.linuxScope)[operation](); }
+				const managedResult = async (operation: "stop" | "finish", grace = 0): Promise<WindowsCleanupResult> => {
+					try { return await (scopeChild && operation === "stop" ? scopeChild.linuxScope.stop(grace) : (jobChild?.windowsJob ?? scopeChild!.linuxScope)[operation]()); }
 					catch { return { confirmed: false, error: "进程清理失败，未确认后台进程已全部结束" }; }
 				};
 				const processes = managedChild ? { signal(_value: NodeJS.Signals) { return managedResult("stop"); }, close() { return managedResult("finish"); }, dispose() {} } : commandProcesses(child, environment);
@@ -319,7 +319,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 						if (managedStopping) return;
 						managedStopping = true;
 						// Stop through the selected kernel owner, not a sampled process tree.
-						void processes.signal("SIGKILL").then(result => {
+						void managedResult("stop", grace).then(result => {
 							managedCleanup = result as WindowsCleanupResult;
 							if (!managedCleanup.confirmed && child.exitCode === null && child.signalCode === null) {
 								// The direct child is still owned. Killing it cannot substitute for
