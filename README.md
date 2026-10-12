@@ -182,6 +182,14 @@ npm run mountains -- --help
 npm run check
 ```
 
+只跑办公、日常和 Coding 场景：
+
+```bash
+npm run test:scenarios
+```
+
+这些场景用临时 CSV、Markdown、文本和代码文件，实际执行文件操作、命令、检查点和恢复。模型回复用固定脚本或本地模拟接口，不代表真实模型的任务成功率，也不测试 Word、Excel 等二进制格式。多轮和会话恢复测试用引擎接口；Preview 1 CLI 仍是单任务。
+
 测试还需要 Python 3。Linux、macOS 默认用 `python3`，Windows 默认用 `python`，也可以用 `MOUNTAINS_PYTHON` 指定已有的解释器。Windows 要允许创建符号链接，才能跑相关测试。POSIX 权限、特殊文件名和 macOS 沙箱测试只在对应系统上跑。
 
 ## 许可证

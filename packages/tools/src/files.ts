@@ -6,7 +6,7 @@ import { outlineLines } from "./outline.ts";
 import { buildEditFeedback } from "./edit-feedback.ts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { ToolContext, ToolDefinition, ToolResult } from "./types.ts";
 import { sha256, ToolError } from "./workspace.ts";
 
@@ -226,7 +226,9 @@ function fail(message: string, details: Record<string, unknown> = {}): ToolResul
 /** 原子写入：同目录临时文件 + rename，保留原权限；expectedHash=null 要求目标仍不存在。 */
 export function atomicWrite(abs: string, data: string | Buffer, expectedHash?: string | null): void {
 	mkdirSync(dirname(abs), { recursive: true });
-	const tmp = `${abs}.mountains-${process.pid}-${randomUUID()}.tmp`;
+	// A valid destination basename may already be near the filesystem's length limit.
+	// Keep the atomic rename on the same filesystem without lengthening that basename.
+	const tmp = join(dirname(abs), `.mountains-${process.pid}-${randomUUID()}.tmp`);
 	let created = false;
 	try {
 		const fd = openSync(tmp, "wx", 0o600);
@@ -475,9 +477,13 @@ export function createEditTool(options: { batch?: boolean; lean?: boolean; appro
 				}
 				const original = buf.toString("utf8");
 				const crlf = original.includes("\r\n");
+				const mixedEndings = crlf && /(?<!\r)\n/.test(original);
 				const spans: { start: number; end: number; text: string; edit: number }[] = [];
 				for (const [index, entry] of edits.entries()) {
-					if (crlf) {
+					// Uniform CRLF files keep their existing adaptation. In a mixed file,
+					// exact bytes take precedence, including their occurrence count; only
+					// fall back to CRLF when the supplied range does not exist verbatim.
+					if (crlf && (!mixedEndings || !original.includes(entry.oldText))) {
 						entry.oldText = entry.oldText.replace(/\r?\n/g, "\r\n");
 						entry.newText = entry.newText.replace(/\r?\n/g, "\r\n");
 					}

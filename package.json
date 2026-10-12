@@ -14,6 +14,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter=spec \"packages/*/test/**/*.test.ts\" \"apps/cli/test/**/*.test.ts\"",
     "test:native": "node --test --test-reporter=spec scripts/native-smoke.test.ts",
+    "test:scenarios": "node --test --test-reporter=spec packages/engine/test/practical-office-daily.test.ts packages/engine/test/practical-coding-recovery.test.ts apps/cli/test/practical-cli-workflows.test.ts",
     "check:deps": "node scripts/check-deps.ts",
     "check": "npm run typecheck && npm run check:deps && npm test",
     "mountains": "node apps/cli/src/main.ts"

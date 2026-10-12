@@ -182,6 +182,14 @@ Check the code. These tests run locally and make no paid model calls:
 npm run check
 ```
 
+Run only the office, daily-work and coding scenarios:
+
+```bash
+npm run test:scenarios
+```
+
+These scenarios use temporary CSV, Markdown, text and source files, with real file operations, commands, checkpoints and recovery. Model responses come from fixed scripts or a local mock server. They do not measure real-model task success or test Word/Excel binary formats. Multi-request and session-restoration tests use the engine API; the Preview 1 CLI remains single-task.
+
 The tests also need Python 3: `python3` on Linux/macOS, or `python` on Windows. Use `MOUNTAINS_PYTHON` to select another installed interpreter. Windows must allow symlink creation for those tests to run. POSIX permissions, special filenames, and macOS sandbox tests run only on the relevant systems.
 
 ## License
