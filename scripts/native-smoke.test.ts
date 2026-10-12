@@ -38,7 +38,9 @@ test("packed source installs and runs offline on the native host", { timeout: 24
 		for (const path of ["package.json", "apps/cli/src/main.ts", "packages/engine/src/index.ts", "packages/tools/src/index.ts"]) {
 			assert.ok(archive.files.some(file => file.path === path), `missing packed source: ${path}`);
 		}
-		run("tar", ["-xzf", join(root, archive.filename), "-C", source, "--strip-components=1"], root);
+		// Windows tar can decode argv through an ANSI code page. Let Node set the
+		// Unicode working directory and give tar only a relative ASCII archive path.
+		run("tar", ["-xzf", join("..", archive.filename), "--strip-components=1"], source);
 		// This private project documents installation from source. npm deliberately
 		// omits package-lock.json from tarballs; retain the checkout's exact lockfile
 		// rather than resolving newer versions or pretending this is a registry package.

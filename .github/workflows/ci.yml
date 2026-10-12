@@ -63,7 +63,9 @@ jobs:
           & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command '$PSVersionTable.PSVersion'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm ci
+        id: install
       - name: Packed-source native smoke (offline)
         run: npm run test:native
       - name: Full offline regression suite (platform skips reported)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run check
