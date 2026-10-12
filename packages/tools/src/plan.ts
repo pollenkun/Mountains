@@ -172,26 +172,43 @@ export function runQueryProcess(command: string, args: string[], ctx: ToolContex
 	return new Promise((resolve, reject) => {
 		if (ctx.signal.aborted || Date.now() >= deadline) { reject(new ToolError("Query cancelled or timed out")); return; }
 		const child = spawn(command, args, { cwd: ctx.workspace.root, stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true });
-		const chunks: Buffer[] = []; let count = 0; let failure: Error | undefined; let stderr = "";
-		const stop = (reason: string) => { failure ??= new ToolError(reason); child.kill("SIGKILL"); };
-		const abort = () => stop("Query cancelled");
+		const chunks: Buffer[] = []; let count = 0; let settled = false; let stderr = "";
+		const cleanup = () => { clearTimeout(timer); ctx.signal.removeEventListener("abort", abort); };
+		const stop = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			child.kill("SIGKILL");
+			// A wrapper's descendants can keep inherited pipes open after it exits.
+			// Failed output is unusable: release our pipes and settle without waiting
+			// for close or attempting to manage processes outside the direct child.
+			child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+			child.unref();
+			reject(error);
+		};
+		const abort = () => stop(new ToolError("Query cancelled"));
+		const timer = setTimeout(() => stop(new ToolError("Query time limit exceeded")), Math.max(1, deadline - Date.now()));
 		ctx.signal.addEventListener("abort", abort, { once: true });
-		const timer = setTimeout(() => stop("Query time limit exceeded"), Math.max(1, deadline - Date.now()));
 		const collect = (b: Buffer, out: boolean) => {
+			if (settled) return;
 			count += b.length;
-			if (count > maxBytes) { stop("Query process output limit exceeded; incomplete result"); return; }
+			if (count > maxBytes) { stop(new ToolError("Query process output limit exceeded; incomplete result")); return; }
 			if (out) chunks.push(b); else stderr += b.toString("utf8");
 		};
 		child.stdout.on("data", (b: Buffer) => collect(b, true)); child.stderr.on("data", (b: Buffer) => collect(b, false));
-		child.stdin.on("error", (err: NodeJS.ErrnoException) => { if (err.code !== "EPIPE") failure ??= err; });
-		child.on("error", (err) => { failure ??= err; });
+		child.stdout.on("error", stop); child.stderr.on("error", stop);
+		child.stdin.on("error", (err: NodeJS.ErrnoException) => { if (err.code !== "EPIPE") stop(err); });
+		child.on("error", stop);
 		child.on("close", (code) => {
-			clearTimeout(timer); ctx.signal.removeEventListener("abort", abort);
-			if (failure) reject(failure);
-			else if (code === null || code > 1 || stderr.trim()) reject(new ToolError(`Query process failed or incomplete: ${stderr.slice(0, 300) || code}`));
+			if (settled) return;
+			settled = true;
+			cleanup();
+			if (code === null || code > 1 || stderr.trim()) reject(new ToolError(`Query process failed or incomplete: ${stderr.slice(0, 300) || code}`));
 			else resolve({ code, stdout: Buffer.concat(chunks).toString("utf8"), bytes: count });
 		});
-		child.stdin.end(input);
+		// Cover cancellation during spawn before the abort listener was installed.
+		if (ctx.signal.aborted) abort();
+		else child.stdin.end(input);
 	});
 }
 const rgCommand = () => process.env.MOUNTAINS_RG ?? "rg";

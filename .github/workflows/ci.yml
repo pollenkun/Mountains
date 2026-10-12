@@ -50,6 +50,7 @@ jobs:
           git --version
           rg --version
           python --version
+          tar --version
       - name: Check Bash (POSIX)
         if: runner.os != 'Windows'
         run: bash --version
@@ -62,5 +63,7 @@ jobs:
           & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command '$PSVersionTable.PSVersion'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm ci
-      - run: npm run check
-      - run: npm run mountains -- --help
+      - name: Packed-source native smoke (offline)
+        run: npm run test:native
+      - name: Full offline regression suite (platform skips reported)
+        run: npm run check

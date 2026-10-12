@@ -10,7 +10,9 @@ const RULES: { exts: string[]; re: RegExp }[] = [
 	{ exts: [".py", ".pyi"], re: /^\s*(?:async\s+def|def|class)\s+[_\p{ID_Start}][_\p{ID_Continue}]*/u },
 	{
 		exts: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
-		re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|namespace)\s+[A-Za-z_$][\w$]*|^\s*(?:(?:public|private|protected|static|readonly|async|get|set)\s+)*[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?::\s*[^{=]+)?\{\s*$/,
+		// The return-type class already includes whitespace; a preceding \s* would
+		// repeatedly split that whitespace when an interface signature has no body.
+		re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|namespace)\s+[A-Za-z_$][\w$]*|^\s*(?:(?:public|private|protected|static|readonly|async|get|set)\s+)*[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?::[^{=]+)?\{\s*$/,
 	},
 	{ exts: [".go"], re: /^\s*(?:func|type)\s+/ },
 	{ exts: [".rs"], re: /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|mod)\b/ },

@@ -348,6 +348,44 @@ function clipText(text: string, limit: number): string {
 	return text.slice(0, end);
 }
 
+/** Later reads covering a range: prefix maxima of end lines, indexed by sorted start lines. */
+class ReadCoverageIndex {
+	private readonly starts: number[];
+	private readonly maximumEnds: (number | undefined)[];
+
+	constructor(starts: number[]) {
+		this.starts = [...new Set(starts)].sort((a, b) => a - b);
+		this.maximumEnds = new Array<number | undefined>(this.starts.length + 1);
+	}
+
+	private prefixLength(start: number): number {
+		let low = 0, high = this.starts.length;
+		while (low < high) {
+			const middle = Math.floor((low + high) / 2);
+			if (this.starts[middle]! <= start) low = middle + 1;
+			else high = middle;
+		}
+		return low;
+	}
+
+	covers(lines: { start: number; end: number }): boolean {
+		for (let i = this.prefixLength(lines.start); i > 0; i -= i & -i) {
+			const end = this.maximumEnds[i];
+			if (end !== undefined && end >= lines.end) return true;
+		}
+		return false;
+	}
+
+	add(lines: { start: number; end: number }): void {
+		// NaN cannot satisfy the original range comparisons or be a sortable coordinate.
+		if (Number.isNaN(lines.start) || Number.isNaN(lines.end)) return;
+		for (let i = this.prefixLength(lines.start); i < this.maximumEnds.length; i += i & -i) {
+			const end = this.maximumEnds[i];
+			if (end === undefined || lines.end > end) this.maximumEnds[i] = lines.end;
+		}
+	}
+}
+
 export function toolTarget(name: string, argumentsJson: string): string {
 	const a = parsedToolArgs(argumentsJson);
 	if (!a) return name;
@@ -649,13 +687,13 @@ export class ContextBuilder {
 	 * answered yet, working notes and memory invalidations are never candidates.
 	 */
 	private losslessCandidates(cfg: ContextPolicy): Map<number, FoldReason> {
-		const calls = new Map<string, { name: string; args: Record<string, unknown>; target: string }>();
+		const calls = new Map<string, { name: string; args: Record<string, unknown>; target: string; key: string }>();
 		const unseen = this.unseenFrom();
 		this.history.forEach((h) => {
 			if (h.message.role !== "assistant" || !h.message.toolCalls.length) return;
 			for (const c of h.message.toolCalls) {
 				const args = parsedToolArgs(c.argumentsJson) ?? {};
-				calls.set(c.id, { name: c.name, args, target: toolTarget(c.name, c.argumentsJson) });
+				calls.set(c.id, { name: c.name, args, target: toolTarget(c.name, c.argumentsJson), key: JSON.stringify(args) });
 			}
 		});
 		const settled = this.userTurnBoundary(cfg.settledUserTurns ?? 2);
@@ -663,24 +701,46 @@ export class ContextBuilder {
 			const call = h.message.role === "tool" ? calls.get(h.message.toolCallId) : undefined;
 			return call && h.meta ? [{ h, i, call, meta: h.meta }] : [];
 		});
-		const out = new Map<number, FoldReason>();
-		results.forEach(({ h, i, call, meta }, k) => {
-			if (i >= unseen || h.maskedContent !== undefined || meta.preserve === "unresolved" || meta.preserve === "memory-invalidation") return;
-			// Only successful later calls make an earlier result obsolete.
-			const later = results.slice(k + 1).filter(l => l.meta.preserve !== "error");
-			if (meta.preserve === "error") {
-				if (later.some(l => l.call.name === call.name && l.call.target === call.target)) out.set(i, "retried");
-			} else if (call.name === "file_read" && typeof call.args.path === "string") {
-				const path = call.args.path, own = meta.lines;
-				if (later.some(l => (l.call.name === "file_edit" || l.call.name === "file_write") && l.call.args.path === path) ||
-					own !== undefined && later.some(l => l.call.name === "file_read" && l.call.args.path === path && l.meta.lines !== undefined && l.meta.lines.start <= own.start && l.meta.lines.end >= own.end)) out.set(i, "superseded");
-			} else if (call.name !== "file_edit" && call.name !== "file_write" && call.name !== "task_note") {
-				const key = JSON.stringify(call.args);
-				if (later.some(l => l.call.name === call.name && JSON.stringify(l.call.args) === key)) out.set(i, "repeated");
+		const readStarts = new Map<string, number[]>();
+		for (const { call, meta } of results) {
+			if (call.name !== "file_read" || typeof call.args.path !== "string" || !meta.lines || Number.isNaN(meta.lines.start)) continue;
+			let starts = readStarts.get(call.args.path);
+			if (!starts) readStarts.set(call.args.path, starts = []);
+			starts.push(meta.lines.start);
+		}
+		const reads = new Map([...readStarts].map(([path, starts]) => [path, new ReadCoverageIndex(starts)]));
+		const targets = new Map<string, Set<string>>(), keys = new Map<string, Set<string>>();
+		const edits = new Set<string>();
+		const remember = (index: Map<string, Set<string>>, name: string, value: string): void => {
+			let values = index.get(name);
+			if (!values) index.set(name, values = new Set());
+			values.add(value);
+		};
+		const out: [number, FoldReason][] = [];
+		// Index only the suffix already visited: O(n log n) for ranges, O(n) for other calls.
+		for (let k = results.length - 1; k >= 0; k--) {
+			const { h, i, call, meta } = results[k]!;
+			if (i < unseen && h.maskedContent === undefined && meta.preserve !== "unresolved" && meta.preserve !== "memory-invalidation") {
+				let reason: FoldReason | undefined;
+				if (meta.preserve === "error") {
+					if (targets.get(call.name)?.has(call.target)) reason = "retried";
+				} else if (call.name === "file_read" && typeof call.args.path === "string") {
+					if (edits.has(call.args.path) || meta.lines !== undefined && reads.get(call.args.path)?.covers(meta.lines)) reason = "superseded";
+				} else if (call.name !== "file_edit" && call.name !== "file_write" && call.name !== "task_note") {
+					if (keys.get(call.name)?.has(call.key)) reason = "repeated";
+				}
+				if (!reason && settled >= 0 && i < settled) reason = "settled";
+				if (reason) out.push([i, reason]);
 			}
-			if (!out.has(i) && settled >= 0 && i < settled) out.set(i, "settled");
-		});
-		return out;
+			// Masked, protected and unseen later results still count; only failures are excluded.
+			if (meta.preserve === "error") continue;
+			remember(targets, call.name, call.target);
+			remember(keys, call.name, call.key);
+			if (typeof call.args.path !== "string") continue;
+			if (call.name === "file_edit" || call.name === "file_write") edits.add(call.args.path);
+			else if (call.name === "file_read" && meta.lines !== undefined) reads.get(call.args.path)?.add(meta.lines);
+		}
+		return new Map(out.reverse());
 	}
 
 	/**
