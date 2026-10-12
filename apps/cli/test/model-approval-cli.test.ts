@@ -14,6 +14,8 @@ const TASK = "Write marker.txt containing sudo in the temporary workspace.";
 const MAIN_KEY = "offline-main-key-do-not-share";
 const APPROVAL_KEY = "offline-approval-key-only";
 const MARKER_COMMAND = { argv: [process.execPath, "-e", 'require("node:fs").writeFileSync("marker.txt", "sudo")'] };
+// Native Windows CI needs headroom for the CLI cold start plus its command subprocess.
+const COMMAND_FIXTURE_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
 
 interface ChatBody {
 	model: string;
@@ -77,7 +79,7 @@ async function localServer(t: TestContext, respond: (request: CapturedRequest, i
 	return { url: `http://127.0.0.1:${address.port}/v1`, requests, errors };
 }
 
-function cliFixture(t: TestContext) {
+function cliFixture(t: TestContext, timeoutMs = 10_000) {
 	const base = mkdtempSync(join(tmpdir(), "mountains-approval-cli-"));
 	const workspace = join(base, "workspace");
 	const home = join(base, "home");
@@ -100,7 +102,7 @@ function cliFixture(t: TestContext) {
 				const startedAt = Date.now();
 				const child = spawn(process.execPath, [MAIN, "run", "--task", TASK, "--workspace", workspace, "--config", path,
 					"--out", out, "--json", "--run-id", "approval-cli-fixture", "--base-url", baseUrl, "--spend-ledger", spend],
-				{ env, signal: t.signal, timeout: 10_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] });
+				{ env, signal: t.signal, timeout: timeoutMs, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] });
 				let stdout = ""; let stderr = ""; let failure: Error | undefined;
 				child.stdout.on("data", (data) => { stdout += data; });
 				child.stderr.on("data", (data) => { stderr += data; });
@@ -115,7 +117,7 @@ function cliFixture(t: TestContext) {
 								return { type: event.type, time: event.time, tool: event.tool, decision: event.decision, ok: event.ok, durationMs: event.durationMs };
 							});
 						} catch { /* Startup can fail before an event file exists. */ }
-						t.diagnostic(JSON.stringify({ elapsedMs: Date.now() - startedAt, signal,
+						t.diagnostic(JSON.stringify({ elapsedMs: Date.now() - startedAt, timeoutMs, signal,
 							markerWritten: existsSync(join(workspace, "marker.txt")), lastEvents: events }));
 					}
 					failure ? reject(failure) : resolve({ code, stdout, stderr });
@@ -335,8 +337,8 @@ test("requestGuard CLI: guarded main requests need no approval key and preserve 
 });
 
 for (const useApprovalKey of [true, false]) {
-	test(`modelApproval CLI: ${useApprovalKey ? "separate credentials" : "loopback without an approval key"} authorize only through the independent endpoint`, { timeout: 20_000 }, async (t) => {
-		const fixture = cliFixture(t);
+	test(`modelApproval CLI: ${useApprovalKey ? "separate credentials" : "loopback without an approval key"} authorize only through the independent endpoint`, { timeout: COMMAND_FIXTURE_TIMEOUT_MS + 10_000 }, async (t) => {
+		const fixture = cliFixture(t, COMMAND_FIXTURE_TIMEOUT_MS);
 		const main = await localServer(t, (request, index) => {
 			assert.equal(request.authorization, `Bearer ${MAIN_KEY}`);
 			assert.equal(request.body.model, "deepseek-flash");

@@ -9,14 +9,15 @@ import { isolatedEnv } from "../apps/cli/test/env.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env) {
-	const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
-	assert.ifError(result.error);
-	assert.equal(result.status, 0, `${command} ${args.join(" ")}\n${result.stderr}\n${result.stdout}`);
+function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 120_000) {
+	const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+	const diagnostic = `${command} ${args.join(" ")} (timeout ${timeoutMs}ms)\n${result.error?.message ?? ""}\n${result.stderr}\n${result.stdout}`;
+	assert.equal(result.error, undefined, diagnostic);
+	assert.equal(result.status, 0, diagnostic);
 	return result.stdout;
 }
 
-test("packed source installs and runs offline on the native host", { timeout: 240_000 }, async t => {
+test("packed source installs and the CLI runs offline on the native host", { timeout: 600_000 }, async t => {
 	// npm supplies its own entrypoint on every platform. Executing it with Node
 	// avoids assuming npm is a native executable (npm.cmd is a Windows shim).
 	const npm = process.env.npm_execpath;
@@ -31,7 +32,7 @@ test("packed source installs and runs offline on the native host", { timeout: 24
 	let installed = false;
 	t.diagnostic(`Native host: ${process.platform}/${process.arch}, Node ${process.version}. Other operating systems are not exercised by this process; CI runs each on its own native runner.`);
 
-	await t.test("npm pack contains the source workspace and locked offline installation succeeds", () => {
+	await t.test("npm pack contains the source workspace and locked installation succeeds", () => {
 		const packed = JSON.parse(run(process.execPath, [npm, "pack", "--offline", "--ignore-scripts", "--json", "--pack-destination", root], ROOT)) as { filename: string; files: { path: string }[] }[];
 		assert.equal(packed.length, 1);
 		const archive = packed[0]!;
@@ -45,7 +46,10 @@ test("packed source installs and runs offline on the native host", { timeout: 24
 		// omits package-lock.json from tarballs; retain the checkout's exact lockfile
 		// rather than resolving newer versions or pretending this is a registry package.
 		copyFileSync(join(ROOT, "package-lock.json"), join(source, "package-lock.json"));
-		run(process.execPath, [npm, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"], source, env);
+		// A warm cache can still lack npm resolution metadata. Allow registry fetches
+		// for the locked install; the CLI replay below remains network-blocked.
+		// A cold native install is not a CLI latency check; bound it separately.
+		run(process.execPath, [npm, "ci", "--prefer-offline", "--ignore-scripts", "--no-audit", "--no-fund"], source, env, 300_000);
 		assert.deepEqual(readFileSync(join(source, "package-lock.json")), readFileSync(join(ROOT, "package-lock.json")));
 		assert.ok(existsSync(join(source, "node_modules", ".bin", process.platform === "win32" ? "mountains.cmd" : "mountains")));
 		installed = true;

@@ -178,13 +178,26 @@ export function runQueryProcess(command: string, args: string[], ctx: ToolContex
 			if (settled) return;
 			settled = true;
 			cleanup();
-			child.kill("SIGKILL");
-			// A wrapper's descendants can keep inherited pipes open after it exits.
-			// Failed output is unusable: release our pipes and settle without waiting
-			// for close or attempting to manage processes outside the direct child.
+			let exitTimer: ReturnType<typeof setTimeout> | undefined;
+			const finish = () => {
+				clearTimeout(exitTimer);
+				child.removeListener("exit", finish);
+				child.unref();
+				reject(error);
+			};
+			const exited = child.exitCode !== null || child.signalCode !== null || child.pid === undefined;
+			if (!exited) {
+				// Wait for the direct child to release its cwd (notably on Windows),
+				// but retain a finite bound if termination cannot be confirmed.
+				child.once("exit", finish);
+				exitTimer = setTimeout(finish, 500);
+			}
+			try { child.kill("SIGKILL"); } catch { /* Preserve the original failure and bounded exit wait. */ }
+			// Descendants can keep inherited pipes open after the wrapper exits.
+			// Failed output is unusable, so release our streams without waiting for
+			// close or attempting to manage processes outside the direct child.
 			child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-			child.unref();
-			reject(error);
+			if (exited) finish();
 		};
 		const abort = () => stop(new ToolError("Query cancelled"));
 		const timer = setTimeout(() => stop(new ToolError("Query time limit exceeded")), Math.max(1, deadline - Date.now()));
