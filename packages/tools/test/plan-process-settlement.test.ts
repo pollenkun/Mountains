@@ -69,6 +69,9 @@ function pipeFixture(t: TestContext, root: string, wrapperExits: boolean) {
 		const fs = require("node:fs");
 		const child = require("node:child_process").spawn(process.execPath, [${JSON.stringify(holder)}], {
 			stdio: ["ignore", "inherit", "inherit"],
+			// Windows otherwise ends this child with its wrapper. Keep the finite
+			// holder independent so inherited pipes really outlive the direct child.
+			detached: process.platform === "win32", windowsHide: true,
 		});
 		fs.writeFileSync(${JSON.stringify(spawned)}, String(child.pid));
 		child.unref();
