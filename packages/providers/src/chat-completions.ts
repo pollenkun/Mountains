@@ -224,6 +224,10 @@ interface SseCapture {
 	model: string | null;
 	id: string | null;
 	toolCalls: Map<number, RawToolCall>;
+	/** Only a fully drained, understood tap may replace Pi's assembled arguments. */
+	complete: boolean;
+	reliable: boolean;
+	protocolError: boolean;
 	done: Promise<void>;
 }
 
@@ -323,36 +327,84 @@ function toPiContext(req: ModelRequest): PiContext {
 	};
 }
 
-function parseSseInto(cap: SseCapture, text: string): void {
-	for (const rawLine of text.split("\n")) {
-		const line = rawLine.replace(/\r$/, "");
-		if (!line.startsWith("data:")) continue;
-		const data = line.slice(5).trim();
-		if (data === "[DONE]" || !data) continue;
-		let chunk: {
-			id?: string;
-			model?: string;
-			usage?: RawUsage | null;
-			choices?: { finish_reason?: string | null; delta?: { tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
-		};
-		try {
-			chunk = JSON.parse(data);
-		} catch {
-			continue;
-		}
-		cap.id ??= chunk.id ?? null;
-		cap.model ??= chunk.model ?? null;
-		if (chunk.usage) cap.usage = chunk.usage;
-		const choice = chunk.choices?.[0];
-		if (choice?.finish_reason) cap.finishReason = choice.finish_reason;
-		for (const tc of choice?.delta?.tool_calls ?? []) {
-			const cur = cap.toolCalls.get(tc.index) ?? { args: "" };
-			if (tc.id) cur.id = tc.id;
-			if (tc.function?.name) cur.name = tc.function.name;
-			if (tc.function?.arguments) cur.args += tc.function.arguments;
-			cap.toolCalls.set(tc.index, cur);
-		}
+/** Capture one complete SSE event, never an individual data field. */
+function captureSseData(cap: SseCapture, data: string): void {
+	let chunk: {
+		id?: string;
+		model?: string;
+		usage?: RawUsage | null;
+		error?: unknown;
+		choices?: { finish_reason?: string | null; delta?: { tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
+	};
+	try { chunk = JSON.parse(data); }
+	catch { cap.reliable = false; cap.protocolError = true; return; }
+	if (!chunk || typeof chunk !== "object") { cap.reliable = false; return; }
+	if (chunk.error) cap.protocolError = true;
+	cap.id ??= chunk.id ?? null;
+	cap.model ??= chunk.model ?? null;
+	if (chunk.usage) cap.usage = chunk.usage;
+	const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
+	if (choice?.finish_reason) cap.finishReason = choice.finish_reason;
+	const calls = choice?.delta?.tool_calls ?? [];
+	if (!Array.isArray(calls)) { cap.reliable = false; cap.protocolError = true; return; }
+	for (const tc of calls) {
+		if (!tc || typeof tc !== "object") { cap.reliable = false; cap.protocolError = true; continue; }
+		// Pi also accepts ID-only/custom tool fragments. If the tap cannot track
+		// their exact order, keep Pi's complete result instead of a raw prefix.
+		if (!Number.isSafeInteger(tc.index) || tc.index < 0 || !tc.function) { cap.reliable = false; continue; }
+		const cur = cap.toolCalls.get(tc.index) ?? { args: "" };
+		if (tc.id) cur.id = tc.id;
+		if (tc.function.name) cur.name = tc.function.name;
+		if (typeof tc.function.arguments === "string") cur.args += tc.function.arguments;
+		else if (tc.function.arguments !== undefined) cap.reliable = false;
+		cap.toolCalls.set(tc.index, cur);
 	}
+}
+
+/** Incremental SSE framing: CR, LF and CRLF may all straddle byte chunks. */
+function sseCaptureParser(cap: SseCapture): (text: string) => void {
+	let line = "";
+	let skipLf = false;
+	let data: string[] = [];
+	let event: string | null = null;
+	let done = false;
+	const acceptLine = () => {
+		if (line === "") {
+			if (data.length > 0) {
+				const payload = data.join("\n");
+				if (payload.startsWith("[DONE]")) done = true;
+				else if (!event?.startsWith("thread.")) captureSseData(cap, payload);
+			}
+			data = [];
+			event = null;
+		} else if (!line.startsWith(":")) {
+			const colon = line.indexOf(":");
+			const field = colon < 0 ? line : line.slice(0, colon);
+			let value = colon < 0 ? "" : line.slice(colon + 1);
+			if (value.startsWith(" ")) value = value.slice(1);
+			if (field === "data") data.push(value);
+			else if (field === "event") event = value;
+		}
+		line = "";
+	};
+	return (text: string) => {
+		let start = 0;
+		for (let i = 0; i < text.length; i++) {
+			if (done) return;
+			const char = text[i];
+			if (skipLf) {
+				skipLf = false;
+				if (char === "\n") { start = i + 1; continue; }
+			}
+			if (char === "\r" || char === "\n") {
+				line += text.slice(start, i);
+				acceptLine();
+				skipLf = char === "\r";
+				start = i + 1;
+			}
+		}
+		if (!done) line += text.slice(start);
+	};
 }
 
 /** 检查思考设置能否用于该模型；不能时返回原因（例如 Kimi 不能关闭思考、不支持 reasoning_effort） */
@@ -388,6 +440,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 		const startedAt = Date.now();
 		let terminalUsed = false;
 		let transportAttempted = false;
+		let transportFailed = false;
 		let localFailure: ExactLocalError | null = null;
 		let requestBody: string | null = null;
 		let httpStatus: number | null = null;
@@ -400,6 +453,9 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			model: null,
 			id: null,
 			toolCalls: new Map(),
+			complete: false,
+			reliable: true,
+			protocolError: false,
 			done: Promise.resolve(),
 		};
 		const localResponse = (error: ExactLocalError): ModelResponse => ({
@@ -414,6 +470,13 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			catch { return localResponse(new ExactLocalError("REQUEST_SNAPSHOT_FAILED")); }
 		}
 		const baseFetch = this.options.fetch ?? globalThis.fetch;
+		const noteTransportFailure = (error: unknown) => {
+			if (!req.signal?.aborted && !(error instanceof Error && error.name === "AbortError")) transportFailed = true;
+		};
+		const sendFetch: typeof globalThis.fetch = async (input, init) => {
+			try { return await baseFetch(input, init); }
+			catch (error) { noteTransportFailure(error); throw error; }
+		};
 		const tapFetch: typeof globalThis.fetch = async (input, init) => {
 			if (typeof init?.body === "string") requestBody = init.body;
 			let res: Response;
@@ -446,7 +509,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 						if (!scope.active || exactCalls.getStore() !== scope || scope.sending !== evidence) throw new ExactLocalError("EXACT_GATE_REPLACED");
 						invoked = true;
 						transportAttempted = true;
-						return baseFetch(input, fixedInit);
+						return sendFetch(input, fixedInit);
 					});
 					if (!invoked) throw new Error("Host gate returned without dispatching");
 				} catch (error) {
@@ -454,7 +517,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 					localFailure = error instanceof ExactLocalError ? error : new ExactLocalError(stage);
 					throw localFailure;
 				}
-			} else res = await baseFetch(input, init);
+			} else res = await sendFetch(input, init);
 			// 账单只能归属于这个官方请求；跳转或 SDK 发往别处不能借用预设的身份。
 			const receiptProvider = req.model === "openai/gpt-4.1-mini" ? "https://openrouter.ai/api/v1" : req.model === "Qwen/Qwen2.5-7B-Instruct" ? "https://api.siliconflow.cn/v1" : null;
 			if (receiptProvider && [receiptProvider, `${receiptProvider}/`].includes(this.options.baseUrl)) {
@@ -466,10 +529,23 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			if (res.status === 429 || res.status >= 500) retryAfterMs = parseRetryAfter(res.headers);
 			if (!res.body) return res;
 			const [forPi, forTap] = res.body.tee();
+			// Observe errors at the SDK's read boundary, separately from parser or
+			// callback failures. The tap may continue draining after Pi rejects JSON.
+			const piReader = forPi.getReader();
+			const observed = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					let next: Awaited<ReturnType<typeof piReader.read>>;
+					try { next = await piReader.read(); }
+					catch (error) { noteTransportFailure(error); controller.error(error); return; }
+					if (next.done) controller.close(); else controller.enqueue(next.value);
+				},
+				cancel: (reason) => piReader.cancel(reason),
+			}, { highWaterMark: 0 });
 			const jsonRejection = res.status >= 400 && res.status < 500 && res.headers.get("content-type")?.includes("application/json");
 			capture.done = (async () => {
 				const dec = new TextDecoder();
-				let buf = "";
+				const parse = sseCaptureParser(capture);
+				let json = "";
 				const reader = forTap.getReader();
 				for (;;) {
 					const { value, done } = await reader.read();
@@ -478,22 +554,17 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 						capture.firstByteAt = Date.now();
 						handlers.onFirstByte?.();
 					}
-					buf += dec.decode(value, { stream: true });
-					const cut = buf.lastIndexOf("\n");
-					if (!jsonRejection && cut >= 0) {
-						parseSseInto(capture, buf.slice(0, cut + 1));
-						buf = buf.slice(cut + 1);
-					}
+					const text = dec.decode(value, { stream: true });
+					if (jsonRejection) json += text; else parse(text);
 				}
-				const rest = buf + dec.decode();
 				if (jsonRejection) {
 					// Error responses can carry usage too. Keep it as evidence instead
 					// of treating every non-SSE rejection as an absent invoice.
-					try { parseSseInto(capture, `data: ${JSON.stringify(JSON.parse(rest))}`); }
-					catch { /* The HTTP rejection itself remains available to the host. */ }
-				} else parseSseInto(capture, rest);
-			})().catch(() => undefined);
-			return new Response(forPi, { status: res.status, statusText: res.statusText, headers: res.headers });
+					captureSseData(capture, json + dec.decode());
+				} else parse(dec.decode());
+				capture.complete = true;
+			})().catch(() => { capture.reliable = false; });
+			return new Response(observed, { status: res.status, statusText: res.statusText, headers: res.headers });
 		};
 
 		try {
@@ -548,12 +619,12 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			let text = "";
 			let reasoning = "";
 			const toolCalls: ToolCall[] = [];
-			const rawByIndex = [...capture.toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+			const rawCalls = capture.complete && capture.reliable ? [...capture.toolCalls.values()] : [];
 			for (const block of final.content) {
 				if (block.type === "text") text += block.text;
 				else if (block.type === "thinking") reasoning += block.thinking;
 				else if (block.type === "toolCall") {
-					const raw = rawByIndex.find((r) => r.id === block.id) ?? rawByIndex[toolCalls.length];
+					const raw = rawCalls.find((r) => r.id === block.id && r.name === block.name);
 					toolCalls.push({ id: block.id, name: block.name, argumentsJson: raw?.args ?? JSON.stringify(block.arguments) });
 				}
 			}
@@ -561,7 +632,11 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			const isError = final.stopReason === "error" || aborted;
 			if (exact && !transportAttempted) return localResponse(localFailure ?? new ExactLocalError(aborted ? "REQUEST_CANCELLED" : "REQUEST_BUILD_FAILED"));
 			const status: number | null = httpStatus;
-			const retryable = !aborted && (status === null || status === 429 || status >= 500);
+			const finishReason = capture.finishReason ?? final.rawStopReason ?? null;
+			const permanentStop = finishReason !== null && !["stop", "end", "length", "tool_calls", "function_call", "network_error"].includes(finishReason);
+			// A failed error-body read cannot turn a permanent HTTP rejection into a retry.
+			const transientStream = (status === null || status >= 200 && status < 300) && !capture.protocolError && (transportFailed || final.rawStopReason === "network_error");
+			const retryable = !aborted && !permanentStop && (transientStream || status === 429 || status !== null && status >= 500);
 			const usage = normalizeUsage(providerFor(req.model), capture.usage);
 			const billingReceipt = !billingTransportRejected && capture.model !== null && responseModelMatches(req.model, capture.model)
 				? officialBillingReceipt(req.model, this.options.baseUrl, capture.usage, usage) : undefined;
@@ -572,7 +647,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			return {
 				ok: !isError,
 				message: { role: "assistant", content: text, reasoning, toolCalls },
-				finishReason: capture.finishReason ?? final.rawStopReason ?? null,
+				finishReason,
 				responseModel: capture.model,
 				responseId: capture.id,
 				rawUsage: capture.usage,

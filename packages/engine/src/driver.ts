@@ -569,7 +569,7 @@ export class AgentSession {
 		this.snapshotReady = true;
 	}
 
-	private emit<T extends EngineEventType>(runId: string, type: T, payload: EventPayload<T>): void {
+	private emit<T extends EngineEventType>(runId: string, type: T, payload: EventPayload<T>, onRecordingError?: (event: EngineEvent) => void): void {
 		this.seq++;
 		const event = {
 			protocolVersion: PROTOCOL_VERSION,
@@ -582,7 +582,13 @@ export class AgentSession {
 			type,
 			...payload,
 		} as unknown as EngineEvent;
-		if (type !== "message.delta") this.recorder.write("engine.event", event);
+		if (type !== "message.delta") {
+			try { this.recorder.write("engine.event", event); }
+			catch (error) {
+				if (!onRecordingError) throw error;
+				onRecordingError(event);
+			}
+		}
 		// Every outward event can become a log or UI message; keep raw values in execution only.
 		this.options.onEvent?.(redactValue(event) as EngineEvent);
 	}
@@ -664,28 +670,39 @@ export class AgentSession {
 
 		const finish = (status: RunSummary["status"], reason: string): RunSummary => {
 			this.acceptingInterjections = false;
+			const recordingFailed = () => {
+				status = "failed";
+				const notice = "运行记录写入失败，请修复存储后继续";
+				if (!reason.includes(notice)) reason += `；${notice}`;
+			};
+			const record = (write: () => void) => { try { write(); } catch { recordingFailed(); } };
 			if (this.interjections.length) {
 				reason += `；${this.interjections.length} 条插话未送达，请作为新任务提交`;
-				for (const input of this.interjections.splice(0)) this.recorder.write("user.input", { runId, id: input.id, task: input.text, source: "interjection", status: "undelivered" });
+				for (const input of this.interjections.splice(0)) record(() => this.recorder.write("user.input", { runId, id: input.id, task: input.text, source: "interjection", status: "undelivered" }));
 			}
 			let checkpoint: RunSummary["checkpoint"] = null;
 			if (ckpt && baselineTree) {
 				try {
 					const end = ckpt.snapshot([...filesChanged]);
 					checkpoint = { tree: baselineTree, changed: ckpt.changedPaths(baselineTree, end.tree) };
-					this.recorder.write("file.hashes", {
-						runId,
-						changed: checkpoint.changed.map((c) => ({ ...c, after: fileSha256(join(this.workspace.root, c.path)) })),
-					});
 				} catch {
 					checkpoint = null;
 				}
+			}
+			// 检查点已生成后，附属录制失败不能丢掉可用的回滚句柄。
+			if (checkpoint) {
+				const changed = checkpoint.changed;
+				record(() => this.recorder.write("file.hashes", { runId, changed: changed.map(c => ({ ...c, after: fileSha256(join(this.workspace.root, c.path)) })) }));
 			}
 			this.emit(runId, "run.completed", {
 				status,
 				reason,
 				turns,
 				totals: { requests: totals.requests, input: totals.input, cacheRead: totals.cacheRead, output: totals.output, cost: totals.cost, currency: totals.currency },
+			}, event => {
+				recordingFailed();
+				// 只发布一次终态事件；磁盘录制失败时仍向调用方交付真实终态。
+				if (event.type === "run.completed") { event.status = status; event.reason = reason; }
 			});
 			return {
 				sessionId: this.sessionId,
@@ -719,6 +736,8 @@ export class AgentSession {
 			const revision = this.planner.beforeRequest(this.builder, o.maxTokens);
 			if (revision) this.noteRevision(runId, revision);
 			const plan = this.builder.plan();
+			// 旧运行若因其他异常留下未配对调用，不能作为新请求继续发送。
+			assertToolPairing(plan.messages);
 			assertFitsWindow(plan, o.maxTokens, this.contextWindow);
 			const diff = diffPlans(this.prevPlan, plan);
 			this.prevPlan = plan;
@@ -917,7 +936,7 @@ export class AgentSession {
 			}
 
 			let pauseReason: string | null = null;
-			const results = await this.executeToolCalls(runId, turnId, msg.toolCalls, signal, beforeWrite, async (call, args) => {
+			const { results, recordingFailed } = await this.executeToolCalls(runId, turnId, msg.toolCalls, signal, beforeWrite, async (call, args) => {
 				if (runAuthorizationRevision !== this.authorizationRevision) pauseReason = "用户已发来新指令，旧运行停止";
 				if (pauseReason) return { decision: "ask", reason: pauseReason };
 				if (!o.modelApproval || !["command_run", "file_edit", "file_write", ...o.modelApproval.settings.manualTools].includes(call.name)) return null;
@@ -954,6 +973,7 @@ export class AgentSession {
 					}
 				}
 			}
+			if (recordingFailed) return finish("failed", "工具记录写入失败；已有工具结果已保留，未开始的操作未执行");
 			if (this.sessionIndexFailure) return finish("limit", this.sessionIndexFailure);
 			if (runAuthorizationRevision !== this.authorizationRevision) return finish("limit", "用户已发来新指令，未执行剩余操作");
 			if (signal.aborted) return finish(deadlineSignal?.aborted ? "limit" : "cancelled", "运行已取消，未执行剩余操作");
@@ -1305,7 +1325,11 @@ export class AgentSession {
 		beforeWrite: (abs: string) => void,
 		review?: (call: ToolCall, args: Record<string, unknown>) => Promise<ReviewedApprovalDecision | null>,
 		expectedActionEpoch?: number,
-	): Promise<{ call: ToolCall; result: ToolResult }[]> {
+	): Promise<{ results: { call: ToolCall; result: ToolResult }[]; recordingFailed: boolean }> {
+		let recordingFailed = false;
+		const onRecordingError = () => { recordingFailed = true; };
+		const record = (write: () => void) => { try { write(); } catch { onRecordingError(); } };
+		const notExecuted = (): ToolResult => ({ ok: false, modelContent: "未执行：工具记录写入失败，已停止后续操作", summary: "工具记录失败，操作未执行", details: { executed: false, recordingFailed: true } });
 		const runOne = async (call: ToolCall): Promise<{ call: ToolCall; result: ToolResult }> => {
 			const tool = this.toolByName.get(call.name);
 			const stale = () => expectedActionEpoch !== undefined && expectedActionEpoch !== this.actionEpoch && !tool?.readOnly;
@@ -1319,11 +1343,12 @@ export class AgentSession {
 			} catch {
 				argError = "参数不是合法 JSON";
 			}
-			this.emit(runId, "tool.requested", { turnId, toolCallId: call.id, tool: call.name, args: argError ? call.argumentsJson : args, summary: call.name });
-			this.recorder.write("tool.input", { runId, toolCallId: call.id, name: call.name, arguments: call.argumentsJson });
+			this.emit(runId, "tool.requested", { turnId, toolCallId: call.id, tool: call.name, args: argError ? call.argumentsJson : args, summary: call.name }, onRecordingError);
+			record(() => this.recorder.write("tool.input", { runId, toolCallId: call.id, name: call.name, arguments: call.argumentsJson }));
 			const t0 = Date.now();
 			let result: ToolResult;
-			if (!tool) result = { ok: false, modelContent: `错误：未知工具 ${call.name}`, summary: `未知工具 ${call.name}`, details: {} };
+			if (recordingFailed) result = notExecuted();
+			else if (!tool) result = { ok: false, modelContent: `错误：未知工具 ${call.name}`, summary: `未知工具 ${call.name}`, details: {} };
 			else if (argError) result = { ok: false, modelContent: `错误：${argError}`, summary: argError, details: {} };
 			else if (signal.aborted) result = { ok: false, modelContent: "操作已取消", summary: "操作已取消", details: { cancelled: true } };
 			else if (stale()) result = revoked();
@@ -1331,7 +1356,8 @@ export class AgentSession {
 				let decision: ReviewedApprovalDecision | null = null;
 				try { decision = await review?.(call, args) ?? null; }
 				catch { decision = { decision: "ask", reason: "审批处理失败，操作未执行" }; }
-				if (stale()) result = revoked();
+				if (recordingFailed) result = notExecuted();
+				else if (stale()) result = revoked();
 				else if (decision && decision.decision !== "allow" && !decision.manualFallback) {
 					const reason = decision.reason ?? "需要用户决定";
 					result = { ok: false, modelContent: `未执行：${reason}`, summary: `审批${decision.decision === "ask" ? "需用户决定" : "拒绝"}`, details: { approved: false, decision: decision.decision, reason } };
@@ -1372,7 +1398,8 @@ export class AgentSession {
 				}
 			}
 			const durationMs = Date.now() - t0;
-			this.recorder.write("tool.output", { runId, toolCallId: call.id, name: call.name, ok: result.ok, modelContent: result.modelContent, details: result.details, durationMs });
+			// 执行结果独立于录制：不能将已完成的写入改成失败，也不能重放来补记录。
+			record(() => this.recorder.write("tool.output", { runId, toolCallId: call.id, name: call.name, ok: result.ok, modelContent: result.modelContent, details: result.details, durationMs }));
 			this.emit(runId, "tool.completed", {
 				turnId,
 				toolCallId: call.id,
@@ -1382,14 +1409,15 @@ export class AgentSession {
 				modelContentChars: result.modelContent.length,
 				durationMs,
 				details: result.details,
-			});
+			}, onRecordingError);
 			return { call, result };
 		};
 		const allReadOnly = calls.every((c) => this.toolByName.get(c.name)?.readOnly && !this.options.modelApproval?.settings.manualTools.includes(c.name));
-		if (allReadOnly) return Promise.all(calls.map(runOne));
-		const out: { call: ToolCall; result: ToolResult }[] = [];
-		for (const c of calls) out.push(await runOne(c));
-		return out;
+		// 并行读取必须全部收束后才能关闭运行；顺序调用则为未执行部分补齐结果。
+		const results: { call: ToolCall; result: ToolResult }[] = [];
+		if (allReadOnly) results.push(...await Promise.all(calls.map(runOne)));
+		else for (const call of calls) results.push(await runOne(call));
+		return { results, recordingFailed };
 	}
 
 	private async approve(runId: string, req: ApprovalRequest, signal: AbortSignal, manualFallback?: () => boolean): Promise<"allow" | "deny"> {
