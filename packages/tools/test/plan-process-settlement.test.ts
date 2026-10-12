@@ -48,7 +48,8 @@ function setup(t: TestContext) {
 		workspace: new Workspace(root), files: new FileStateTracker(), signal: controller.signal,
 		toolCallId: "query-process-lifecycle", approve: async () => { throw new Error("read only"); },
 	};
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	// Windows may release directory handles shortly after the fixture exits.
+	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 	return { root, controller, ctx };
 }
 
