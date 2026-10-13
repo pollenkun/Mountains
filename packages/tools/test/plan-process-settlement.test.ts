@@ -48,8 +48,12 @@ function setup(t: TestContext) {
 		workspace: new Workspace(root), files: new FileStateTracker(), signal: controller.signal,
 		toolCallId: "query-process-lifecycle", approve: async () => { throw new Error("read only"); },
 	};
-	// Windows may release directory handles shortly after the fixture exits.
-	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+	// Windows may release directory handles shortly after the fixture exits. A temporary
+	// directory still locked after the retries is left behind; it is not what this file tests.
+	t.after(() => {
+		try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+		catch (error) { if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EBUSY") throw error; }
+	});
 	return { root, controller, ctx };
 }
 
