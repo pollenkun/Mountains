@@ -27,12 +27,11 @@ export function createExpandTool(): ToolDefinition {
 			"Recover immutable archived evidence by ref (fullOutputRef is raw output; shown refs are earlier model text). " +
 			"Use offset/limit for 1-based lines, or offsetBytes for 0-based raw byte paging. " +
 			`Every reply is bounded by maxBytes (default ${EXPAND_DEFAULT_BYTES}, max ${EXPAND_MAX_BYTES}) and at most ${EXPAND_MAX_LINES} lines. ` +
-			"Follow nextOffsetBytes and snapshot for long lines. A snapshot continues the exact fully verified in-memory bytes for up to 5 minutes even if the archive changes; omit snapshot to reverify disk. Expired snapshots must be reopened without the handle. UTF-8 pages preserve original BOM/CRLF. Invalid UTF-8 returns base64 original bytes; no encoding is guessed.",
+			"Follow nextOffsetBytes for long lines. UTF-8 pages preserve original BOM/CRLF. Invalid UTF-8 returns base64 original bytes; no encoding is guessed.",
 		parameters: {
 			type: "object",
 			properties: {
 				ref: { type: "string", description: "Exact immutable fullOutputRef or shown ref" },
-				snapshot: { type: "string", description: "Optional verified paging handle returned with the prior page, bound to this ref and store" },
 				offset: { type: "integer", minimum: 1, description: "First line, 1-based (default 1); cannot combine with offsetBytes" },
 				limit: { type: "integer", minimum: 1, maximum: EXPAND_MAX_LINES, description: "Number of lines (default 200)" },
 				offsetBytes: { type: "integer", minimum: 0, description: "0-based byte offset into this archived version; cannot combine with offset/limit" },
@@ -87,7 +86,7 @@ export function createExpandTool(): ToolDefinition {
 				const body = encoding === "base64" ? bodyBytes.toString("base64") : bodyBytes.toString("utf8");
 				const label = kind === "shown" ? "as shown earlier" : "original archived bytes";
 				const range = legacyDisplay ? `lines ${offset}-${Math.min(totalLines, offset + limit - 1)} of ${totalLines}` : `bytes ${start}-${end} of ${totalBytes} (end exclusive) | encoding=${encoding}${invalidUtf8 ? " | invalid UTF-8" : ""}`;
-				const next = more ? legacyDisplay ? ` | more: offset=${offset + limit}, snapshot=${handle}` : ` | more: offsetBytes=${end}, snapshot=${handle}` : "";
+				const next = more ? legacyDisplay ? ` | more: offset=${offset + limit}` : ` | more: offsetBytes=${end}` : "";
 				return {
 					ok: true,
 					modelContent: `[ref=${ref} | ${range} | ${label}${next}]\n${body}`,

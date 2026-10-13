@@ -348,7 +348,7 @@ describe("context_expand：按引用取回被移出上下文的原文", () => {
 		assert.equal(all.modelContent, `[ref=${ref} | lines 1-10 of 10 | as shown earlier]\n${text}`);
 		const part = await expand.execute({ ref, offset: 3, limit: 2 }, ctx);
 		assert.match(String(part.details.snapshot), /^page_v1_[0-9a-f]{32}$/);
-		assert.equal(part.modelContent, `[ref=${ref} | lines 3-4 of 10 | as shown earlier | more: offset=5, snapshot=${part.details.snapshot}]\nrow 3\nrow 4`);
+		assert.equal(part.modelContent, `[ref=${ref} | lines 3-4 of 10 | as shown earlier | more: offset=5]\nrow 3\nrow 4`);
 		const continuation = await expand.execute({ ref, snapshot: part.details.snapshot, offset: 5, limit: 2 }, ctx);
 		assert.equal(continuation.ok, true);
 		assert.ok(continuation.modelContent.endsWith("\nrow 5\nrow 6"));

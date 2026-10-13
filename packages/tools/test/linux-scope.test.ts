@@ -49,7 +49,8 @@ for (const platform of ["linux", "darwin"] as const) test(`${platform} fallback 
 	assert.equal(result.details.processTreeCleanupMode, "best-effort");
 	assert.equal(result.details.processTreeCleanupConfirmed, false);
 	assert.equal(result.details.captureComplete, true); assert.ok(result.fullOutputRef); assert.equal(result.details.partialOutputRef, undefined);
-	assert.match(result.modelContent, /best-effort\/unconfirmed/);
+	assert.match(result.summary, /best-effort\/unconfirmed/);
+	assert.doesNotMatch(result.modelContent, /best-effort/, "routine best-effort cleanup is not repeated to the model");
 	assert.equal(f.ctx.blobs!.get(result.fullOutputRef!), "whole output");
 });
 

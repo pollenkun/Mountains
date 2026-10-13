@@ -12,6 +12,8 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 ![做对次数、总花费、总用时对比](assets/benchmark-zh.svg)
 
+成绩测的是 [`preview-1`](https://github.com/pollenkun/Mountains/tree/preview-1) 标签。之后的修复没有改动模型看到的系统提示和工具说明，没有重新测。
+
 | 系统 | 版本 | 做对 | 花费（元） | 用时（分钟） |
 |---|---|---|---|---|
 | **Mountains** | Preview 1 | 19/24 | **3.72** | **50.4** |
@@ -77,7 +79,7 @@ Preview 1 是一次技术实验，不是日常工具：没有交互界面，没�
 
 需要 Node.js 22.19 或更高版本、npm、Git，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。Git 用来保存文件检查点。
 
-这次补了 Linux 和 Windows 的兼容。CI 配了三个系统，每个系统都检查 Node.js 22.19 和 24。这六项 CI 已通过。
+支持 Linux、macOS 和 Windows。CI 在这三个系统上分别用 Node.js 22.19 和 24 检查。
 
 - **Linux、macOS：** 还需要 Bash。精简 Linux 镜像可能没有自带，需要另装；Linux 的进程清理要能读取 `/proc`。
 - **Windows 10/11：** 安装 Git for Windows，包含 Git Bash，并保留系统自带的 Windows PowerShell。可以从 PowerShell、cmd 或 Git Bash 启动。
@@ -162,7 +164,7 @@ macOS 和没有可用用户级 systemd 的 Linux 只能尽力清理。结果会�
 
 运行记录、回放、归档和费用账本默认放在主目录的 `.mountains` 下，Windows 是 `%USERPROFILE%\.mountains`。设置 `MOUNTAINS_HOME` 可以换目录。配置文件或 `--spend-ledger` 指定的账本路径优先。运行输出、费用账本、检查点和归档目录必须放在任务工作区之外。
 
-以前的 `MOUNTAINS_HOME` 只改归档位置。这次也会改默认账本位置。如果旧的 `~/.mountains/spend.jsonl` 还在、新目录没有账本，CLI 会先停下来。把旧账本搬过去，或用 `--spend-ledger` 继续用原路径，累计费用就不会从零开始。
+设置了 `MOUNTAINS_HOME` 时，如果 `~/.mountains/spend.jsonl` 已有账本、新目录还没有，CLI 会先停下来。把旧账本搬过去，或用 `--spend-ledger` 继续用原路径，累计费用就不会从零开始。
 
 编译缓存另外存放：Linux 用 `$XDG_CACHE_HOME`（默认 `~/.cache`），macOS 用 `~/Library/Caches`，Windows 用 `%LOCALAPPDATA%`，再加 `mountains/node-compile-cache`。缓存不可用不影响启动。
 

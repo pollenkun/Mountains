@@ -299,7 +299,7 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 		logicalName: "command.run",
 		readOnly: false,
 		description:
-			"Run a temporary command in the workspace (not sandboxed; subject to approval). Attempts to clean up background descendants when the command ends; platform ownership strength is reported; persistent user jobs require separate ownership. Provide either argv (preferred) or shellScript (run with bash -c). " +
+			"Run a command in the workspace (not sandboxed; subject to approval). Provide either argv (preferred) or shellScript (run with bash -c). " +
 			(platform === "win32" ? "Windows argv requires a native executable; for .cmd/.bat such as npm.cmd, explicitly use cmd.exe /c or shellScript with Git for Windows Bash. " : "") +
 			`Returns exit code and combined stdout/stderr (long output keeps the first ${limits.headLines} and last ${limits.tailLines} lines). Default timeout ${limits.defaultTimeoutMs / 1000}s.`,
 		parameters: {
@@ -521,12 +521,14 @@ export function createCommandTool(limits: CommandLimits = DEFAULT_COMMAND_LIMITS
 				const decoding = invalidUtf8 ? "; invalid UTF-8: display uses replacement characters" + (ref && recovery.contextExpand ? "; archived original bytes can be recovered as base64" : "") : "";
 				const searchHint = !outputLimited && !cleanupIncomplete && ref && recovery.contextExpand && recovery.archiveSearch && (truncated || invalidUtf8)
 					? `; search archived lines with context_search ref=${ref} toolCallId=${JSON.stringify(ctx.toolCallId)}` : "";
-				const cleanupHint = (bestEffort ? `; process cleanup best-effort/unconfirmed (${fallbackReason}); unobserved detached descendants may survive` : "") + (posixCleanupError ? `; ${posixCleanupError}` : managedCleanup && !managedCleanup.confirmed ? `; ${managedCleanup.error ?? "未确认后台进程已全部结束"}` : "");
+				// Best-effort cleanup is the normal case on macOS; it stays in the summary and details, not in every model result.
+				const bestEffortHint = bestEffort ? `; process cleanup best-effort/unconfirmed (${fallbackReason}); unobserved detached descendants may survive` : "";
+				const cleanupHint = (posixCleanupError ? `; ${posixCleanupError}` : managedCleanup && !managedCleanup.confirmed ? `; ${managedCleanup.error ?? "未确认后台进程已全部结束"}` : "");
 				const modelContent = `$ ${display}\n[${status}; ${durationMs}ms${truncated ? outputLimited || cleanupIncomplete ? `; display truncated, captured ${output.length} chars` : `; output truncated, full ${output.length} chars` : ""}${decoding}${recoveryHint}${searchHint}${cleanupHint}]\n${text}`;
 				return {
 					ok: !exit.spawnError && !timedOut && !cancelled && !outputLimited && !cleanupIncomplete && exit.code === 0,
 					modelContent,
-					summary: `运行 ${truncateUtf16(display, 60)}（${status}${cleanupHint}）`,
+					summary: `运行 ${truncateUtf16(display, 60)}（${status}${bestEffortHint}${cleanupHint}）`,
 					details: { command: display, cwd: rel, risk, exitCode: exit.code, signal: exit.signal, timedOut, cancelled, durationMs, outputChars: output.length, outputBytes: raw.length, outputSha256: sha256(raw), invalidUtf8, archiveError, streamOrder: "observed-data-events", toolCallId: ctx.toolCallId, truncated,
 						processTreeCleanupMode: scopeChild ? "systemd-scope" : jobChild ? "windows-job" : "best-effort",
 						...(bestEffort ? { processTreeCleanupConfirmed: false, processTreeCleanupReason: fallbackReason } : {}),

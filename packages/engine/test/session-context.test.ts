@@ -58,7 +58,7 @@ test("a session keeps the configured thinking, the system prompt with tool notes
 	const last = adapter.requests.at(-1)!;
 	assert.equal(last.messages.filter(m => m.content.includes("[Repository facts")).length, 1, "brief once per session");
 	const brief = last.messages.find(m => m.content.includes("[Repository facts"))!.content;
-	assert.ok(brief.includes(`host=${process.platform}/${process.arch}; node=${process.version};`), "the model sees the actual command host");
+	assert.ok(!brief.includes("host="), "the brief is the benchmarked one, without host details");
 	assert.deepEqual(last.tools.slice(-2).map(t => t.name), ["session_search", "task_note"]);
 	assert.match(last.tools.find(t => t.name === "file_edit")!.description, /./);
 	assert.equal(session.options.toolOptions?.editFeedback, true, "edit feedback is on");

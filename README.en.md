@@ -12,6 +12,8 @@ One model (DeepSeek V4.1 Flash, reasoning effort high), the same 12 bug-fix task
 
 ![Runs solved, total cost and total time](assets/benchmark-en.svg)
 
+These results were measured at the [`preview-1`](https://github.com/pollenkun/Mountains/tree/preview-1) tag. Later fixes did not change the system prompt or tool descriptions the model sees, and were not re-measured.
+
 | System | Version | Solved | Cost (CNY) | Time (min) |
 |---|---|---|---|---|
 | **Mountains** | Preview 1 | 19/24 | **3.72** | **50.4** |
@@ -77,7 +79,7 @@ Six tools: `query_plan` (search, list and read files in one call), `file_read`, 
 
 Requires Node.js 22.19 or later, npm, Git, and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`). Git stores file checkpoints.
 
-This update adds Linux and Windows compatibility. CI is set up for all three systems, each with Node.js 22.19 and 24. All six CI jobs pass.
+Linux, macOS and Windows are supported. CI checks each of them with Node.js 22.19 and 24.
 
 - **Linux, macOS:** Bash is also required. Minimal Linux images may need it installed separately; process cleanup needs access to `/proc` on Linux.
 - **Windows 10/11:** install Git for Windows, including Git Bash, and keep the built-in Windows PowerShell available. Start from PowerShell, cmd, or Git Bash.
@@ -162,7 +164,7 @@ macOS and Linux without usable user-systemd have best-effort cleanup. Results ex
 
 Recordings, replays, archives, and the spending ledger go in `.mountains` under your home directory (`%USERPROFILE%\.mountains` on Windows). Set `MOUNTAINS_HOME` to use another directory. A ledger path set in the config or through `--spend-ledger` takes precedence. Run output, the spending ledger, checkpoints, and archives must stay outside the task workspace.
 
-Previously, `MOUNTAINS_HOME` moved only archives. It now moves the default ledger too. If the old `~/.mountains/spend.jsonl` still exists and the new directory has no ledger, the CLI stops first. Move the old ledger over, or keep its original path with `--spend-ledger`, so cumulative spending does not restart at zero.
+When `MOUNTAINS_HOME` is set, if `~/.mountains/spend.jsonl` already holds a ledger and the new directory has none, the CLI stops first. Move the old ledger over, or keep its original path with `--spend-ledger`, so cumulative spending does not restart at zero.
 
 The compile cache is separate: Linux uses `$XDG_CACHE_HOME` (default `~/.cache`), macOS uses `~/Library/Caches`, and Windows uses `%LOCALAPPDATA%`, followed by `mountains/node-compile-cache`. An unavailable cache does not prevent startup.
 
