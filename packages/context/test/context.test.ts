@@ -179,7 +179,7 @@ describe("无损折叠与压缩", () => {
 		assert.equal(b.plan().revision, 0);
 	});
 
-	test("压缩：工具交互换成一条带摘要的通知，用户消息与最终答复按原顺序保留，最新交互原样留在尾部", () => {
+	test("压缩：较早的用户消息、最终答复和工具交互一起并入摘要，最新的请求和尾部原样保留，原文可以取回", () => {
 		const { b, archives } = fixture();
 		b.appendUser("第一个问题");
 		call(b, "file_read", { path: "x.py" });
@@ -193,11 +193,13 @@ describe("无损折叠与压缩", () => {
 		assert.equal(r.reason, "compaction");
 		const plan = b.plan();
 		assertToolPairing(plan.messages);
-		assert.deepEqual(plan.messages.slice(0, 3).map(m => m.content), ["第一个问题", "第一个答复", "第二个问题"]);
-		const notice = plan.messages[3]!;
-		assert.match(notice.content, /the summary you wrote below replaces 2 earlier messages/);
+		assert.equal(plan.messages[0]?.content, "第二个问题", "最新的请求原样保留");
+		const notice = plan.messages[1]!;
+		assert.match(notice.content, /The summary you wrote below replaces 4 earlier messages, including the user's earlier messages and your earlier answers/);
 		assert.match(notice.content, /<summary>\n摘要：x\.py 已读过。\n<\/summary>$/);
-		assert.ok(archives.has(checkpointArchiveRef(notice.content)!));
+		assert.ok(!plan.messages.some(m => m.content === "第一个问题" || m.content === "第一个答复"));
+		const archived = JSON.parse(archives.get(checkpointArchiveRef(notice.content)!)!).messages.map((m: { content: string }) => m.content);
+		assert.ok(archived.includes("第一个问题") && archived.includes("第一个答复"), "原话在存档里");
 		assert.ok(plan.messages.at(-1)!.content.includes("latest listing"), "模型还没回应的交互留在尾部");
 		assert.equal(b.assistantTurns, turns);
 		const restored = new ContextBuilder({ system: "sys", tools, expandTool: "context_expand" });
@@ -205,7 +207,24 @@ describe("无损折叠与压缩", () => {
 		assert.deepEqual(restored.plan().messages, plan.messages);
 	});
 
-	test("没有工具交互可压缩时返回 null", () => {
+	test("用户消息本身超过窗口时，程序记录也会带上较早请求的原话摘录，对话可以继续", () => {
+		const { b } = fixture();
+		const long = "很长的粘贴内容 ".repeat(3000);
+		b.appendUser(`第一个问题：${long}`);
+		b.appendAssistant({ role: "assistant", content: "第一个答复", reasoning: "r", toolCalls: [] });
+		b.appendUser("第二个问题");
+		call(b, "command_run", { cmd: "ls" }, { content: "latest listing" });
+		const before = b.plan().totalTokensEst;
+		const tail = b.compactionTailStart(10)!;
+		b.applyCompaction(b.compactionRecord(tail), tail, 0, 1_000_000, false);
+		const plan = b.plan();
+		assert.ok(plan.totalTokensEst < before / 5, "超长的旧消息不再占窗口");
+		const notice = plan.messages.find(m => m.content.includes("<summary>"))!.content;
+		assert.match(notice, /The user's earlier messages \(latest last; exact wording in the archive\):\n  - 第一个问题：很长的粘贴内容/);
+		assert.match(notice, /program record/);
+	});
+
+	test("只有最新的请求和回答时没有可压缩的内容，返回 null", () => {
 		const { b } = fixture();
 		b.appendUser("只是聊天");
 		b.appendAssistant({ role: "assistant", content: "好的", reasoning: "r", toolCalls: [] });

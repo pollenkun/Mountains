@@ -12,7 +12,7 @@ One model (DeepSeek V4.1 Flash, reasoning effort high), the same 12 bug-fix task
 
 ![Runs solved, total cost and total time](assets/benchmark-en.svg)
 
-These results were measured at the [`preview-1`](https://github.com/pollenkun/Mountains/tree/preview-1) tag. Later fixes did not change the system prompt or tool descriptions the model sees, and were not re-measured.
+These results were measured at the [`preview-1`](https://github.com/pollenkun/Mountains/tree/preview-1) tag. Later fixes did not change the system prompt or tool descriptions the model sees, and were not re-measured. None of the 24 runs reached 60% of the context window, so the later change to compaction at 90% does not affect these results.
 
 | System | Version | Solved | Cost (CNY) | Time (min) |
 |---|---|---|---|---|
@@ -67,8 +67,8 @@ Tasks come from SWE-bench Verified, SWE-bench Multilingual and SWE-bench-Live Mu
 ### Context
 
 - **From 60% of the window: lossless folding.** The program decides which old tool results the model will not need again: those superseded by a later read or edit, those whose same call later succeeded again, failures that later succeeded on retry, and results from requests finished before the last two user requests. Each becomes a one-line notice; the original is archived and can be retrieved. Results fold in batches so the prompt cache is broken rarely.
-- **From 90%: the model writes a summary.** When lossless folding is not enough, the model summarizes the earlier work, which replaces the old tool interactions. That request reuses the cached prefix. If it fails, the program writes a factual record instead.
-- **Never folded:** user messages, the final answer of each turn, and results the model has not seen yet.
+- **From 90%: the model writes a summary.** When lossless folding is not enough, the model summarizes everything earlier, the user's earlier messages and answers included; the originals are archived and the model can retrieve the exact wording. That request reuses the cached prefix. If it fails, the program writes a factual record instead.
+- **Always kept verbatim:** the newest request, the most recent work, and results the model has not seen yet. Lossless folding at 60% never touches user messages or the final answer of each turn.
 - **No budget.** The model is not given a token allowance.
 
 ### Tools

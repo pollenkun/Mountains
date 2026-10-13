@@ -157,8 +157,8 @@ test("at the compaction line the model summarizes earlier interactions on the ca
 			assert.equal(request.messages.slice(0, -1).length < summaryRequest!.messages.length, true);
 			assert.ok(!request.messages.some(m => m.content.includes("alpha line 900:")), "the earlier read is gone");
 			const notice = request.messages.find(m => m.role === "user" && m.content.includes("<summary>"));
-			assert.ok(notice && notice.content.includes("alpha code ALPHA-7") && notice.content.includes("the summary you wrote"));
-			assert.ok(request.messages.some(m => m.content === "Read both files."), "user message verbatim");
+			assert.ok(notice && notice.content.includes("alpha code ALPHA-7") && notice.content.includes("The summary you wrote"));
+			assert.ok(request.messages.some(m => m.content === "Read both files."), "the newest request stays verbatim");
 			assert.ok(request.messages.some(m => m.role === "tool" && m.content.includes("bravo line 200:")), "the newest interaction stays");
 			assertToolPairing(request.messages);
 			return reply();

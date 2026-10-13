@@ -257,7 +257,11 @@ function snapshotInputsAgree(context: ContextStateV1, inputs: readonly { text: s
 	const isNotice = (text: string) => markers.some((marker) => text.startsWith(marker));
 	if (inputs.some((input) => isNotice(input.text))) return false;
 	const users = context.history.filter((item) => item.message.role === "user" && !isNotice(item.message.content));
-	return users.length === inputs.length && users.every((item, index) => item.message.content === inputs[index]!.text);
+	// A compaction moves earlier user messages into its archive; the ones still present are the newest.
+	const compacted = context.history.some((item) => item.message.role === "user" && item.message.content.startsWith(markers[1]!) && item.message.content.includes("\n<summary>\n"));
+	if (compacted ? users.length > inputs.length : users.length !== inputs.length) return false;
+	const offset = inputs.length - users.length;
+	return users.every((item, index) => item.message.content === inputs[offset + index]!.text);
 }
 
 /** 一个会话：可以连续执行多个 run（对话历史保留）。 */
