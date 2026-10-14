@@ -130,3 +130,47 @@ test("/name at the start of a message names a user-invocable skill; other text d
 	assert.equal(skillInvocation("/auto-only now", skills), null);
 	assert.equal(skillInvocation("/pdf-tools", skills, { "pdf-*": "deny" }), null);
 });
+
+test("frontmatter: quoted values may run over several indented lines and fold like YAML", () => {
+	const { fields } = parseSkillFile([
+		"---", "name: pdf-tools",
+		"description: \"Extract text and tables",
+		"  from PDF files.", "", "  Use for forms.\"",
+		"license: 'Apache-2.0 with",
+		"  the ''LLVM'' exception'",
+		"note: \"joined\\", "  here\"",
+		"---", "Body"].join("\n"));
+	assert.equal(fields.description, "Extract text and tables from PDF files.\nUse for forms.");
+	assert.equal(fields.license, "Apache-2.0 with the 'LLVM' exception");
+	assert.equal(fields.note, "joinedhere");
+	assert.throws(() => parseSkillFile("---\nname: x\ndescription: \"open\n  still open\n---\n"), /引号/);
+	const dir = mkdtempSync(join(tmpdir(), "mountains-skills-"));
+	try {
+		skill(dir, "pdf-tools", "name: pdf-tools\ndescription: \"Extract text and tables\n  from PDF files.\"");
+		const { skills, warnings } = discoverSkills([{ dir, source: "user" }]);
+		assert.deepEqual(warnings, []);
+		assert.equal(skills[0]?.description, "Extract text and tables from PDF files.");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a skill only the user starts can read its bundled files once the user loaded it, and only then", async t => {
+	const dir = temp(t);
+	const root = join(dir, "skills");
+	skill(root, "deploy", "name: deploy\ndescription: Deploy the site.\ndisable-model-invocation: true", "Follow checklist.md.", { "checklist.md": "1. Build." });
+	const { skills } = discoverSkills([{ dir: root, source: "project" }]);
+	const loaded = new Set<string>();
+	const requests: ApprovalRequest[] = [];
+	const tool = createSkillTool(skills, {}, loaded);
+	assert.doesNotMatch(tool.description, /available_skills|deploy/);
+	const ctx = context(dir, async req => { requests.push(req); return "deny"; });
+	assert.equal((await tool.execute({ name: "deploy", file: "checklist.md" }, ctx)).ok, false, "not before the user loads it");
+	loaded.add("deploy");
+	const file = await tool.execute({ name: "deploy", file: "checklist.md" }, ctx);
+	assert.equal(file.ok, true, file.modelContent);
+	assert.equal(file.modelContent, '<skill_file skill="deploy" path="checklist.md">\n1. Build.\n</skill_file>');
+	assert.equal(requests.length, 0, "the user's /deploy stands in for approval");
+	const body = await tool.execute({ name: "deploy" }, ctx);
+	assert.equal(body.ok, false);
+	assert.match(body.modelContent, /started by the user with \/deploy/);
+	assert.equal((await createSkillTool(skills, { deploy: "deny" }, loaded).execute({ name: "deploy", file: "checklist.md" }, ctx)).ok, false);
+});

@@ -157,3 +157,32 @@ test("retained byte budget evicts large snapshots before the entry-count ceiling
 	assert.ok(blobs.pagingSnapshot(refC, c.handle));
 	assert.ok(b.view.retainedBytes + c.view.retainedBytes <= ARCHIVE_SNAPSHOT_LIMITS.maxBytes);
 });
+
+test("pages requested without a snapshot handle reuse the verified view, so a long archive is read once", async t => {
+	const { dir, blobs, ctx, expand } = setup(t);
+	const bytes = Buffer.from("line of archived output\n".repeat(180_000));
+	const ref = blobs.put(bytes, { kind: "raw" });
+	const identity = statSync(path(dir, ref));
+	let payloadReads = 0;
+	const original = fs.readSync;
+	const mock = t.mock.method(fs, "readSync", (fd: number, ...args: unknown[]) => {
+		const current = fstatSync(fd);
+		const result = Reflect.apply(original, fs, [fd, ...args]) as number;
+		if (current.dev === identity.dev && current.ino === identity.ino) payloadReads += result;
+		return result;
+	});
+	syncBuiltinESMExports();
+	try {
+		const pages: Buffer[] = [];
+		let offset: unknown = 0;
+		while (offset !== undefined) {
+			const page = await expand.execute({ ref, offsetBytes: offset, maxBytes: 12_000 }, ctx);
+			assert.equal(page.ok, true, page.modelContent);
+			pages.push(Buffer.from(body(page.modelContent)));
+			offset = page.details.nextOffsetBytes;
+		}
+		assert.ok(pages.length > 300);
+		assert.deepEqual(Buffer.concat(pages), bytes);
+		assert.equal(payloadReads, bytes.length, "the archive is verified once, not once per page");
+	} finally { mock.mock.restore(); syncBuiltinESMExports(); }
+});

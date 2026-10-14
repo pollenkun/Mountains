@@ -70,20 +70,41 @@ export function parseSkillFile(text: string): { fields: Record<string, string>; 
 		} else if (raw === "") {
 			// A nested map (metadata and the like) or an empty value.
 			if (!block.some(l => l.trim())) fields[key] = "";
-		} else if (raw.startsWith('"')) {
-			const q = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(raw);
+		} else if (raw.startsWith('"') || raw.startsWith("'")) {
+			const double = raw.startsWith('"');
+			const pattern = double ? /^"((?:[^"\\]|\\[\s\S])*)"[ \t]*(?:#.*)?$/ : /^'((?:[^']|'')*)'[ \t]*(?:#.*)?$/;
+			// A quoted value may continue on the indented lines that follow, up to its closing quote.
+			let text = raw, used = 0, q = pattern.exec(text);
+			while (!q && used < block.length) q = pattern.exec(text += `\n${block[used++]}`);
 			if (!q) throw new SkillFormatError(`${key} 的引号没有闭合`);
-			fields[key] = q[1]!.replace(/\\(["\\nt])/g, (_, c: string) => (c === "n" ? "\n" : c === "t" ? "\t" : c));
-		} else if (raw.startsWith("'")) {
-			const q = /^'((?:[^']|'')*)'\s*(?:#.*)?$/.exec(raw);
-			if (!q) throw new SkillFormatError(`${key} 的引号没有闭合`);
-			fields[key] = q[1]!.replace(/''/g, "'");
+			const folded = foldQuoted(q[1]!, double);
+			fields[key] = double ? folded.replace(/\\(["\\nt])/g, (_, c: string) => (c === "n" ? "\n" : c === "t" ? "\t" : c)) : folded.replace(/''/g, "'");
 		} else {
 			// Plain scalar; continuation lines fold into it.
 			fields[key] = [raw.replace(/\s+#.*$/, ""), ...block.map(l => l.trim()).filter(Boolean)].join(" ").trim();
 		}
 	}
 	return { fields, body };
+}
+
+/** YAML line folding inside quotes: one line break is a space, each empty line a newline, and `\` ends a line without a space. */
+function foldQuoted(inner: string, double: boolean): string {
+	const lines = inner.split("\n");
+	let out = "", pending = "";
+	lines.forEach((line, k) => {
+		let part = k > 0 ? line.replace(/^[ \t]+/, "") : line;
+		const last = k === lines.length - 1;
+		if (!last && double && /(?:^|[^\\])(?:\\\\)*\\$/.test(part)) {
+			out += pending + part.slice(0, -1);
+			pending = "";
+			return;
+		}
+		if (!last) part = part.replace(/[ \t]+$/, "");
+		if (k > 0 && !part && !last) { pending = pending === " " ? "\n" : `${pending}\n`; return; }
+		out += pending + part;
+		pending = last ? "" : " ";
+	});
+	return out;
 }
 
 function parseFlag(value: string | undefined, key: string, fallback: boolean): boolean {
@@ -240,7 +261,7 @@ function readBundledFile(entry: SkillEntry, path: string): string {
 }
 
 /** The model-facing `skill` tool; its description carries the catalog. */
-export function createSkillTool(skills: readonly SkillEntry[], permissions: Readonly<Record<string, SkillPermission>> = {}): ToolDefinition {
+export function createSkillTool(skills: readonly SkillEntry[], permissions: Readonly<Record<string, SkillPermission>> = {}, userLoaded: ReadonlySet<string> = new Set()): ToolDefinition {
 	const listed = modelSkills(skills, permissions);
 	const approved = new Set<string>();
 	const catalog = listed.map(s => `  <skill>\n    <name>${s.name}</name>\n    <description>${escapeText(s.description)}</description>\n  </skill>`).join("\n");
@@ -248,12 +269,14 @@ export function createSkillTool(skills: readonly SkillEntry[], permissions: Read
 		name: "skill",
 		logicalName: "skill.load",
 		readOnly: true,
-		description: "Load a skill: instructions, and sometimes files, for a specific kind of task. Before working on a task that matches a skill below, load it and follow its instructions; never act on the description alone. To read one of a skill's bundled files, pass its path as file.\n" +
-			`<available_skills>\n${catalog}\n</available_skills>`,
+		description: listed.length
+			? "Load a skill: instructions, and sometimes files, for a specific kind of task. Before working on a task that matches a skill below, load it and follow its instructions; never act on the description alone. To read one of a skill's bundled files, pass its path as file.\n" +
+				`<available_skills>\n${catalog}\n</available_skills>`
+			: "Read a bundled file of a skill the user loaded with /name: pass the skill's name, and the file's path relative to the skill directory as file.",
 		parameters: {
 			type: "object",
 			properties: {
-				name: { type: "string", description: "Exact skill name from available_skills" },
+				name: { type: "string", description: listed.length ? "Exact skill name from available_skills" : "Exact name of a skill the user loaded" },
 				file: { type: "string", description: "Optional bundled file, relative to the skill directory" },
 			},
 			required: ["name"],
@@ -263,9 +286,11 @@ export function createSkillTool(skills: readonly SkillEntry[], permissions: Read
 			const name = typeof args.name === "string" ? args.name.trim() : "";
 			const file = typeof args.file === "string" ? args.file.trim() : undefined;
 			if (Object.keys(args).some(k => k !== "name" && k !== "file")) return fail("unknown argument");
-			const entry = listed.find(s => s.name === name);
+			// A skill only the user may start is not listed, but once the user loads it its bundled files can be read.
+			const entry = listed.find(s => s.name === name) ?? (userLoaded.has(name) ? skills.find(s => s.name === name && s.userInvocable && skillPermission(s, permissions) !== "deny") : undefined);
 			if (!entry) return fail(`no skill named ${JSON.stringify(name)} is available`, { skill: name });
-			if (skillPermission(entry, permissions) === "ask" && !approved.has(entry.name)) {
+			if (file === undefined && !listed.includes(entry)) return fail(`${entry.name} is started by the user with /${entry.name}; its instructions are already in the conversation. Pass file to read one of its bundled files.`, { skill: entry.name });
+			if (skillPermission(entry, permissions) === "ask" && !approved.has(entry.name) && !userLoaded.has(entry.name)) {
 				const decision = await ctx.approve({
 					toolCallId: ctx.toolCallId, command: `load skill ${entry.name}${entry.dir ? ` from ${entry.dir}` : ""}`, cwd: ctx.workspace.root, risk: "dangerous",
 					explanation: `${entry.source === "project" ? "Project" : "This"} skill's instructions can ask the agent to run scripts or change files.`,

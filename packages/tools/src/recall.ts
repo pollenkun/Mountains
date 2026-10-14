@@ -20,6 +20,9 @@ function boundary(view: VerifiedBlobSnapshot, offset: number): boolean {
 
 /** Recovery only uses immutable archives; it never reads a current source or reruns a command. */
 export function createExpandTool(): ToolDefinition {
+	// Continuation pages of one archive reuse its verified snapshot until the store expires it, so a long archive
+	// is checked once; a read from the start verifies again.
+	const handles = new WeakMap<object, Map<string, string>>();
 	return {
 		name: "context_expand",
 		logicalName: "context.expand",
@@ -57,7 +60,16 @@ export function createExpandTool(): ToolDefinition {
 				if (!["auto", "utf8", "base64"].includes(requestedEncoding as string)) return fail("encoding 无效");
 				if (!ctx.blobs?.matchesWorkspace(ctx.workspace.root)) return fail("找不到或无权读取该引用");
 				if (args.snapshot !== undefined && (typeof args.snapshot !== "string" || !/^page_v1_[0-9a-f]{32}$/.test(args.snapshot))) return fail("无效 snapshot");
-				const paging = ctx.blobs.pagingSnapshot(ref, args.snapshot as string | undefined);
+				let known = handles.get(ctx.blobs);
+				if (!known) handles.set(ctx.blobs, known = new Map());
+				const continuing = byteMode ? requestedByte > 0 : offset > 1;
+				const cached = args.snapshot === undefined && continuing ? known.get(ref) : undefined;
+				const paging = (cached !== undefined ? ctx.blobs.pagingSnapshot(ref, cached) : null) ?? ctx.blobs.pagingSnapshot(ref, args.snapshot as string | undefined);
+				if (paging && args.snapshot === undefined) {
+					known.delete(ref);
+					known.set(ref, paging.handle);
+					if (known.size > 256) known.delete(known.keys().next().value!);
+				}
 				if (!paging) return fail(args.snapshot === undefined ? "找不到、无权读取或归档校验失败" : "分页快照无效、已过期或已被回收；请省略 snapshot 重新校验归档");
 				const { view, handle } = paging;
 				const { invalidUtf8, kind, hash, totalBytes, totalLines } = view;
