@@ -15,6 +15,7 @@ export * from "./workspace.ts";
 export * from "./session-index.ts";
 export * from "./session-search.ts";
 export * from "./task-note.ts";
+export * from "./skills.ts";
 
 /** Tool options. The tool list itself is fixed for a session (tool definitions are part of the stable prefix). */
 export interface ToolOptions {

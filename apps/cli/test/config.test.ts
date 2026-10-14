@@ -77,3 +77,12 @@ test("malformed numeric limits and retry settings cannot silently disable protec
 	assert.equal(loadConfig(null, { limits: { maxCost: 0 } as never }).config.limits.maxCost, 0);
 	assert.equal(loadConfig(null, { retry: { baseDelayMs: 0, maxDelayMs: 0 } as never }).config.retry.baseDelayMs, 0);
 });
+
+test("skills: on by default with no extra directories; bad settings are rejected", () => {
+	assert.deepEqual(loadConfig(null).config.skills, { enabled: true, dirs: [], enable: [], permissions: {} });
+	assert.deepEqual(loadConfig(null, { skills: { enabled: true, dirs: ["~/team-skills"], enable: ["computer-use"], permissions: { "deploy-*": "ask" } } }).config.skills.permissions, { "deploy-*": "ask" });
+	assert.throws(() => loadConfig(null, { skills: { permissions: { x: "maybe" } } as never }), /allow、ask 或 deny/);
+	assert.throws(() => loadConfig(null, { skills: { dirs: [""] } as never }), /skills\.dirs/);
+	assert.throws(() => loadConfig(null, { skills: { enabled: "yes" } as never }), /skills\.enabled/);
+	assert.throws(() => loadConfig(null, { skills: { extra: true } as never }), /未知配置项：skills\.extra/);
+});

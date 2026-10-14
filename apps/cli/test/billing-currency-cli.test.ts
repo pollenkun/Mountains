@@ -15,7 +15,7 @@ import { DEFAULT_CONFIG, loadConfig } from "../src/config.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 // The default configuration's hash: a change here means the default configuration changed.
-const DEFAULT_SHA = "967d3db22c6a4962712b9b6d65dee8dfe7bfb46971fc262564259f03acab7bbf";
+const DEFAULT_SHA = "4e9ed4dde28b2524f4b70ae9caa9dbb22337f47a4ba9823f7f7197cf148e5028";
 const OPTIONAL_FIELDS = ["billingCurrency"] as const;
 const DEEPSEEK_USAGE: RawUsage = { prompt_tokens: 1000, completion_tokens: 20, total_tokens: 1020,
 	prompt_cache_hit_tokens: 896, prompt_cache_miss_tokens: 104, completion_tokens_details: { reasoning_tokens: 5 } };

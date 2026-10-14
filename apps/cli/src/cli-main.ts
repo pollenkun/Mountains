@@ -11,12 +11,13 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { USAGE, parseRunArgs, parseReplayArgs } from "./cli-args.ts";
 import type { EngineEvent } from "@mountains/protocol";
 import { AgentSession, BudgetGuard, DEFAULT_LIMITS, type RunSummary, replayAdapterFromRecording } from "@mountains/engine";
 import { ApprovalChatAdapter, ChatCompletionsAdapter, currencyOf, type Currency, type ModelAdapter, pricingFor, providerOf } from "@mountains/providers";
-import { Workspace } from "@mountains/tools";
+import { projectSkillRoots, type SkillRoot, Workspace } from "@mountains/tools";
 import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { expandHome, mountainsHome } from "./paths.ts";
 
@@ -36,6 +37,17 @@ function help(): never {
 }
 
 /** Per-project data outside the workspace: ~/.mountains/projects/<hash of the real workspace path>. */
+/** Project skills first, then the configured directories, then the user's own. */
+function skillRoots(workspaceRoot: string, dirs: readonly string[], configPath: string | null): SkillRoot[] {
+	const base = configPath ? dirname(resolve(configPath)) : process.cwd();
+	return [
+		...projectSkillRoots(workspaceRoot),
+		...dirs.map(dir => ({ dir: resolve(base, expandHome(dir)), source: "user" as const })),
+		{ dir: join(mountainsHome(), "skills"), source: "user" },
+		{ dir: join(homedir(), ".agents", "skills"), source: "user" },
+	];
+}
+
 function projectDir(workspaceRoot: string, home = mountainsHome()): string {
 	const root = existsSync(workspaceRoot) ? realpathSync(workspaceRoot) : resolve(workspaceRoot);
 	return join(resolve(home), "projects", createHash("sha256").update(root).digest("hex").slice(0, 16));
@@ -175,6 +187,7 @@ async function cmdRun(argv: string[]): Promise<void> {
 		// Folded and compacted originals stay with the project, outside the task checkout.
 		archiveDir: requireExternalStorage(join(projectDir(ws.root), "blobs"), ws.root),
 		toolOptions: { read: cfg.tools.read, batchEdit: cfg.tools.batchEdit, editFeedback: cfg.tools.editFeedback },
+		...(cfg.skills.enabled ? { skills: { roots: skillRoots(ws.root, cfg.skills.dirs, loaded.source), enable: cfg.skills.enable, permissions: cfg.skills.permissions } } : {}),
 		onEvent: eventSink(outDir, values.json),
 	});
 	writeFileSync(join(outDir, "config.json"), `${JSON.stringify({ source: loaded.source, sha256: loaded.sha256, config: cfg }, null, 2)}\n`);

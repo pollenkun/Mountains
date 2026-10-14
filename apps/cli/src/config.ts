@@ -39,6 +39,11 @@ export interface MountainsConfig {
 	checkpoints: boolean;
 	/** 读取上限、批量编辑、编辑后回显改动附近的源码 */
 	tools: { read: { defaultLines: number; maxLines: number; maxLineChars: number; lineNumbers: "all" | "sparse" }; batchEdit: boolean; editFeedback: boolean };
+	/**
+	 * 技能：在项目的 .mountains/skills 与 .agents/skills、~/.mountains/skills、~/.agents/skills 以及 dirs 里查找；
+	 * enable 打开带工具的内置技能；permissions 按名字（可用 *）设 allow / ask / deny，项目里的技能默认 ask。
+	 */
+	skills: { enabled: boolean; dirs: string[]; enable: string[]; permissions: Record<string, "allow" | "ask" | "deny"> };
 }
 
 export const DEFAULT_CONFIG: MountainsConfig = {
@@ -58,6 +63,7 @@ export const DEFAULT_CONFIG: MountainsConfig = {
 	spendLedger: "~/.mountains/spend.jsonl",
 	checkpoints: true,
 	tools: { read: { defaultLines: 2000, maxLines: 2000, maxLineChars: 2000, lineNumbers: "all" }, batchEdit: true, editFeedback: true },
+	skills: { enabled: true, dirs: [], enable: [], permissions: {} },
 };
 
 const KNOWN_KEYS = new Set([...Object.keys(DEFAULT_CONFIG), "billingCurrency", "contextWindow", "userIdFixed"]);
@@ -111,7 +117,15 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 			throw new Error("billingCurrency=CNY 必须显式提供有限正数 limits.maxCost（人民币金额），不能沿用默认美元预算");
 		}
 	}
-	for (const [name, value] of Object.entries({ requestGuard: config.requestGuard, batchEdit: config.tools.batchEdit, editFeedback: config.tools.editFeedback })) {
+	const skills = config.skills as unknown as Record<string, unknown>;
+	const unknownSkillKey = Object.keys(skills).find(key => !["enabled", "dirs", "enable", "permissions"].includes(key));
+	if (unknownSkillKey) throw new Error(`未知配置项：skills.${unknownSkillKey}`);
+	for (const key of ["dirs", "enable"] as const) {
+		if (!Array.isArray(skills[key]) || (skills[key] as unknown[]).some(v => typeof v !== "string" || !v)) throw new Error(`skills.${key} 必须是非空字符串数组`);
+	}
+	if (!skills.permissions || typeof skills.permissions !== "object" || Array.isArray(skills.permissions) ||
+		Object.values(skills.permissions).some(v => v !== "allow" && v !== "ask" && v !== "deny")) throw new Error("skills.permissions 的值只能是 allow、ask 或 deny");
+	for (const [name, value] of Object.entries({ requestGuard: config.requestGuard, batchEdit: config.tools.batchEdit, editFeedback: config.tools.editFeedback, "skills.enabled": skills.enabled })) {
 		if (typeof value !== "boolean") throw new Error(`配置 ${name} 必须为布尔值`);
 	}
 	if (config.contextWindow !== undefined && (!Number.isSafeInteger(config.contextWindow) || config.contextWindow < 32_768)) throw new Error("contextWindow 必须是不小于 32768 的整数");

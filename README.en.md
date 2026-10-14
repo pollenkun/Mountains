@@ -170,6 +170,29 @@ The compile cache is separate: Linux uses `$XDG_CACHE_HOME` (default `~/.cache`)
 
 Checkpoints also save Git-ignored files before file tools change them. Changes to ignored files made by commands may not be recoverable. Keep a separate backup of important files.
 
+### Skills
+
+A skill is a folder holding `SKILL.md` in the [Agent Skills](https://agentskills.io/specification) format, so skills written for other agents work as they are:
+
+```markdown
+---
+name: changelog
+description: Write changelog entries in the project's format. Use when writing or editing CHANGELOG.
+---
+
+Use Keep a Changelog headings…
+```
+
+Mountains looks for skills here, and the first one found wins a name: the project's `.mountains/skills` and `.agents/skills` (from the workspace up to the repository root), the folders listed in `skills.dirs` in the config, `~/.mountains/skills`, and `~/.agents/skills`.
+
+The model sees only each skill's name and description, and loads the full instructions and bundled files with the `skill` tool when it needs them. A task that starts with `/skill-name` brings that skill in directly, for example `--task "/changelog write the 2.1 entry"`. With no skills installed, the model sees exactly the tools and prompt of the version measured above.
+
+Project skills come from the repository and may tell the model to run scripts, so by default someone has to approve them before they load; a CLI run has no one to ask, so it does not load them. Allow the ones you trust by name in the config; `*` matches any characters:
+
+```json
+{ "skills": { "permissions": { "changelog": "allow", "deploy-*": "deny" } } }
+```
+
 ### Checks
 
 Help requires no API key and sends no model request:

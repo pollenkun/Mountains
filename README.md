@@ -170,6 +170,29 @@ macOS 和没有可用用户级 systemd 的 Linux 只能尽力清理。结果会�
 
 检查点也会保存文件工具修改前的 Git 忽略文件。通过命令修改的忽略文件，不保证能恢复到修改前；重要文件还是要另外备份。
 
+### 技能
+
+技能是一个放着 `SKILL.md` 的文件夹，格式和 [Agent Skills](https://agentskills.io/specification) 一样，别处写好的技能可以直接用：
+
+```markdown
+---
+name: changelog
+description: 按项目的格式写更新日志。要写或修改 CHANGELOG 时使用。
+---
+
+用 Keep a Changelog 的标题……
+```
+
+Mountains 会在这些地方找技能，同名时前面的优先：项目里的 `.mountains/skills` 和 `.agents/skills`（从工作目录一直找到仓库根目录）、配置里 `skills.dirs` 列出的文件夹、`~/.mountains/skills`、`~/.agents/skills`。
+
+模型只看到每个技能的名字和说明，需要时再用 `skill` 工具读取全文和附带的文件。任务以 `/技能名` 开头时，会直接带上这个技能，例如 `--task "/changelog 写 2.1 版本"`。没有任何技能时，模型看到的工具和提示词与上面测试的版本完全一样。
+
+项目里自带的技能来自仓库，可能让模型运行脚本，所以默认要有人批准才会加载；命令行版运行时没人可问，默认就不加载。信得过的技能可以在配置里按名字放行，`*` 匹配任意字符：
+
+```json
+{ "skills": { "permissions": { "changelog": "allow", "deploy-*": "deny" } } }
+```
+
 ### 检查
 
 查看帮助，不需要密钥，也不调用模型：
