@@ -1,6 +1,6 @@
 # Mountains Preview 1
 
-[中文](README.md) | English
+English | [中文](README.zh-CN.md)
 
 Mountains is a coding agent: an engine plus a single-command CLI. Give it a task and a directory; it reads code, edits it, runs commands, and exits when done.
 

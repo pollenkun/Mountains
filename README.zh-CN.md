@@ -1,6 +1,6 @@
 # Mountains Preview 1
 
-中文 | [English](README.en.md)
+[English](README.md) | 中文
 
 Mountains 是一个编码 Agent：一个内核，加一个单命令 CLI。给它一个任务和一个目录，它读代码、改代码、跑命令，做完就退出。
 
