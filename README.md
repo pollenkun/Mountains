@@ -1,91 +1,91 @@
 # Mountains Preview 1
 
-中文 | [English](README.en.md)
+[中文](README.md) | English
 
-Mountains 是一个编码 Agent：一个内核，加一个单命令 CLI。给它一个任务和一个目录，它读代码、改代码、跑命令，做完就退出。
+Mountains is a coding agent: an engine plus a single-command CLI. Give it a task and a directory; it reads code, edits it, runs commands, and exits when done.
 
-Preview 1 是一次技术实验，不是日常工具：没有交互界面，没有多轮对话。我们公开它，是为了展示下面这套上下文管理和工具设计在真实题目上的表现。桌面版会在 Preview 2 推出。
+Preview 1 is a technical experiment, not an everyday tool: there is no interactive interface or multi-turn conversation. We are publishing it to show how the context management and tool design below perform on real tasks. A desktop app comes with Preview 2.
 
-## 测试结果
+## Results
 
-同一个模型（DeepSeek V4.1 Flash，思考强度 high），同样 12 道真实仓库的修 bug 题，每题跑 2 次，共 24 次。
+One model (DeepSeek V4.1 Flash, reasoning effort high), the same 12 bug-fix tasks from real repositories, 2 runs per task, 24 runs in total.
 
-![做对次数、总花费、总用时对比](assets/benchmark-zh.svg)
+![Runs solved, total cost and total time](assets/benchmark-en.svg)
 
-成绩测的是 [`preview-1`](https://github.com/pollenkun/Mountains/tree/preview-1) 标签。之后的修复没有改动模型看到的系统提示和工具说明，没有重新测。24 次运行的上下文都没有到 60%，所以后来对 90% 压缩的修改也不影响这组成绩。
+These results were measured at the [`preview-1`](https://github.com/pollenkun/Mountains/tree/preview-1) tag. Later fixes did not change the system prompt or tool descriptions the model sees, and were not re-measured. None of the 24 runs reached 60% of the context window, so the later change to compaction at 90% does not affect these results.
 
-| 系统 | 版本 | 做对 | 花费（元） | 用时（分钟） |
+| System | Version | Solved | Cost (CNY) | Time (min) |
 |---|---|---|---|---|
 | **Mountains** | Preview 1 | 19/24 | **3.72** | **50.4** |
 | [OpenCode](https://github.com/sst/opencode) | 1.18.32 | 19/24 | 3.98 | 65.1 |
 | [Pi](https://github.com/badlogic/pi-mono) | 0.87.1 | 19/24 | 4.68 | 72.0 |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 0.2.0 | **20/24** | 6.68 | 115.3 |
 
-简单说：做对的数量和其他三个差不多，花费和用时最少。
+In short: about as many tasks solved as the other three, at the lowest cost and in the least time.
 
-### 题目
+### Tasks
 
-每题的「做对」是 2 次里做对几次。
+"Solved" per task is how many of its 2 runs succeeded.
 
-| 题目 | 语言 | 难度 | 问题 | Mountains | OpenCode | Pi | DeepSeek Harness |
+| Task | Language | Difficulty | Problem | Mountains | OpenCode | Pi | DeepSeek Harness |
 |---|---|---|---|---|---|---|---|
-| [pallets/flask#5014](https://github.com/pallets/flask/pull/5014) | Python | 普通 | Blueprint 名字为空时应报错 | 2 | 2 | 2 | 2 |
-| [psf/requests#6028](https://github.com/psf/requests/pull/6028) | Python | 普通 | Python 3.8.12 下代理认证返回 407 | 2 | 2 | 2 | 2 |
-| [astropy/astropy#14995](https://github.com/astropy/astropy/pull/14995) | Python | 普通 | NDDataRef 一边没有 mask 时，mask 传播出错 | 2 | 2 | 2 | 2 |
-| [pydata/xarray#7393](https://github.com/pydata/xarray/pull/7393) | Python | 普通 | stack 把 int32 坐标变成 int64 | 2 | 2 | 2 | 2 |
-| [immutable-js/immutable-js#2005](https://github.com/immutable-js/immutable-js/pull/2005) | JavaScript | 困难 | OrderedSet 的相等判断和 hashCode 有误 | 2 | 1 | 1 | 2 |
-| [thlorenz/doctoc#328](https://github.com/thlorenz/doctoc/pull/328) | JavaScript | 普通 | 标题含 `h#` 这类文字时正则报错 | 0 | 0 | 0 | 0 |
-| [cthackers/adm-zip#559](https://github.com/cthackers/adm-zip/pull/559) | JavaScript | 普通 | macOS 上传绝对路径时 addLocalFolderPromise 失败 | 2 | 2 | 2 | 2 |
-| [rollup/rollup#6041](https://github.com/rollup/rollup/pull/6041) | JavaScript | 困难 | 4.46 的 `in` 优化弄坏了 styled-components | 0 | 0 | 0 | 0 |
-| [kepano/defuddle#243](https://github.com/kepano/defuddle/pull/243) | TypeScript | 普通 | 没有文字的空表格被保留进输出 | 2 | 2 | 2 | 2 |
-| [stleary/JSON-java#995](https://github.com/stleary/JSON-java/pull/995) | Java | 普通 | keepStrings 下 `<t>null</t>` 被解析成 null | 1 | 2 | 2 | 2 |
-| [google/gson#1093](https://github.com/google/gson/pull/1093) | Java | 普通 | 宽松模式下 `value(double)` 不接受 NaN 和 Infinity | 2 | 2 | 2 | 2 |
-| [gin-gonic/gin#1805](https://github.com/gin-gonic/gin/pull/1805) | Go | 普通 | 用 StaticFS 时一个 404 打出两行日志 | 2 | 2 | 2 | 2 |
+| [pallets/flask#5014](https://github.com/pallets/flask/pull/5014) | Python | Ordinary | An empty Blueprint name should raise an error | 2 | 2 | 2 | 2 |
+| [psf/requests#6028](https://github.com/psf/requests/pull/6028) | Python | Ordinary | Proxy authentication returns 407 on Python 3.8.12 | 2 | 2 | 2 | 2 |
+| [astropy/astropy#14995](https://github.com/astropy/astropy/pull/14995) | Python | Ordinary | NDDataRef mask propagation fails when one operand has no mask | 2 | 2 | 2 | 2 |
+| [pydata/xarray#7393](https://github.com/pydata/xarray/pull/7393) | Python | Ordinary | `stack` casts an int32 coordinate to int64 | 2 | 2 | 2 | 2 |
+| [immutable-js/immutable-js#2005](https://github.com/immutable-js/immutable-js/pull/2005) | JavaScript | Hard | OrderedSet equality and hashCode are wrong | 2 | 1 | 1 | 2 |
+| [thlorenz/doctoc#328](https://github.com/thlorenz/doctoc/pull/328) | JavaScript | Ordinary | Text such as `h#` in a heading causes an invalid regular expression | 0 | 0 | 0 | 0 |
+| [cthackers/adm-zip#559](https://github.com/cthackers/adm-zip/pull/559) | JavaScript | Ordinary | addLocalFolderPromise fails with an absolute path on macOS | 2 | 2 | 2 | 2 |
+| [rollup/rollup#6041](https://github.com/rollup/rollup/pull/6041) | JavaScript | Hard | The `in` optimization in 4.46 breaks styled-components | 0 | 0 | 0 | 0 |
+| [kepano/defuddle#243](https://github.com/kepano/defuddle/pull/243) | TypeScript | Ordinary | Empty tables with no text are kept in the output | 2 | 2 | 2 | 2 |
+| [stleary/JSON-java#995](https://github.com/stleary/JSON-java/pull/995) | Java | Ordinary | With keepStrings, `<t>null</t>` is parsed as null | 1 | 2 | 2 | 2 |
+| [google/gson#1093](https://github.com/google/gson/pull/1093) | Java | Ordinary | In lenient mode, `value(double)` rejects NaN and Infinity | 2 | 2 | 2 | 2 |
+| [gin-gonic/gin#1805](https://github.com/gin-gonic/gin/pull/1805) | Go | Ordinary | With StaticFS, one 404 is logged twice | 2 | 2 | 2 | 2 |
 
-题目来自 SWE-bench Verified、SWE-bench Multilingual 和 SWE-bench-Live MultiLang。难度是我们按修复需要理解的代码范围评的。
+Tasks come from SWE-bench Verified, SWE-bench Multilingual and SWE-bench-Live MultiLang. Difficulty is our own rating of how much code a fix requires understanding.
 
-### 怎么测的
+### How we tested
 
-- **模型：** 四个系统都用 DeepSeek V4.1 Flash，思考强度 high，单次输出上限 32,000 token。
-- **题面：** Agent 只拿到原始 issue 的文字和对应提交时的仓库。
-- **评分：** 用这次修复附带的隐藏测试，加上仓库原有的回归测试，全部通过才算做对。Agent 运行时看不到隐藏测试。
-- **环境：** 同一台 Mac，同一个沙箱和启动方式。每次运行的花费上限：普通题 2 元，困难题 4 元。
-- **花费：** 按 DeepSeek 返回的实际用量和官方闲时价格计算（缓存命中 0.02 元、未命中 1 元、输出 4 元，每百万 token）。
-- **用时：** Agent 进程从启动到退出的时间，24 次相加。
-- **对手设置：** 其他三个系统都用各自正常的无界面模式和默认能力，没有关掉任何功能。
+- **Model:** all four systems used DeepSeek V4.1 Flash, reasoning effort high, at most 32,000 output tokens per request.
+- **Task input:** the agent received only the original issue text and the repository at the corresponding commit.
+- **Grading:** the hidden tests that came with the fix, plus the repository's existing regression tests; a run counts as solved only if all pass. The agent cannot see the hidden tests.
+- **Environment:** the same Mac, the same sandbox and launch method. Cost cap per run: 2 CNY for ordinary tasks, 4 CNY for hard ones.
+- **Cost:** computed from the usage DeepSeek reported and its official off-peak prices (per million tokens: cache hit 0.02 CNY, cache miss 1 CNY, output 4 CNY).
+- **Time:** from agent process start to exit, summed over 24 runs.
+- **Other systems:** each ran in its normal headless mode with its default capabilities; nothing was turned off.
 
-### 需要说明的
+### Caveats
 
-- **这是作者自测。** 题目、评分程序和运行环境都是我们自己搭的。
-- **提示词是在这 12 道题上调的。** Mountains 的系统提示和工具说明，是作者看过这些题上的早期结果之后写的。这对 Mountains 有利，所以这份结果只能说明它在这些题上的表现，不能当成独立的基准。
-- **样本小。** 12 道题、每题 2 次，1 次的差别就是 4 个百分点。
-- **运行日期不同。** 其他三个系统在 2026-10-06 运行，Mountains 在 2026-10-11 运行。两天用的是同一套闲时价格。
-- **两道题四个系统都没做对**（doctoc、rollup）。
+- **This is the author's own test.** We built the task set, the grader and the environment ourselves.
+- **The prompt was tuned on these 12 tasks.** Mountains' system prompt and tool notes were written after the author had seen earlier results on these tasks. This favors Mountains, so the results describe its performance on these tasks only; they are not an independent benchmark.
+- **Small sample.** 12 tasks, 2 runs each: one run is about 4 percentage points.
+- **Different run dates.** The other three systems ran on 2026-10-06, Mountains on 2026-10-11. Both days used the same off-peak prices.
+- **Two tasks were solved by none of the four** (doctoc, rollup).
 
-## 设计
+## Design
 
-### 上下文
+### Context
 
-- **60% 起：无损折叠。** 由程序判断哪些旧的工具结果模型不会再需要：被后来的读取或编辑覆盖的、后来同样调用又成功一次的、失败后重试成功的、属于两次用户请求之前已经结束的。这些结果换成一行英文说明，原文存档，需要时可以取回。一次折一批，避免频繁打断缓存。
-- **90% 起：模型写摘要。** 如果无损折叠不够，就让模型把之前的内容总结一下，较早的用户消息和回答也一起并入摘要，原文存档，模型需要时可以取回原话。这次请求复用已缓存的前缀。摘要失败时，由程序写一份事实记录代替。
-- **始终原样保留：** 最新的一条请求、最近的工作、模型还没看到的结果。60% 的无损折叠不会动用户的消息和每轮的最终回答。
-- **没有预算。** 不按 token 数给模型设上限。
+- **From 60% of the window: lossless folding.** The program decides which old tool results the model will not need again: those superseded by a later read or edit, those whose same call later succeeded again, failures that later succeeded on retry, and results from requests finished before the last two user requests. Each becomes a one-line notice; the original is archived and can be retrieved. Results fold in batches so the prompt cache is broken rarely.
+- **From 90%: the model writes a summary.** When lossless folding is not enough, the model summarizes everything earlier, the user's earlier messages and answers included; the originals are archived and the model can retrieve the exact wording. That request reuses the cached prefix. If it fails, the program writes a factual record instead.
+- **Always kept verbatim:** the newest request, the most recent work, and results the model has not seen yet. Lossless folding at 60% never touches user messages or the final answer of each turn.
+- **No budget.** The model is not given a token allowance.
 
-### 工具
+### Tools
 
-六个工具：`query_plan`（一次调用里批量搜索、列文件、读文件）、`file_read`、`file_edit`、`file_write`、`command_run`、`context_expand`（取回被折叠的原文）。另外有 `session_search`（搜索本次会话的历史）和 `task_note`（模型记下自己的工作状态）。
+Six tools: `query_plan` (search, list and read files in one call), `file_read`, `file_edit`, `file_write`, `command_run`, and `context_expand` (retrieve a folded original). In addition, `session_search` searches this session's history and `task_note` lets the model record its working state.
 
-## 使用
+## Usage
 
-需要 Node.js 22.19 或更高版本、npm、Git，以及 [ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`）。Git 用来保存文件检查点。
+Requires Node.js 22.19 or later, npm, Git, and [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`). Git stores file checkpoints.
 
-支持 Linux、macOS 和 Windows。CI 在这三个系统上分别用 Node.js 22.19 和 24 检查。
+Linux, macOS and Windows are supported. CI checks each of them with Node.js 22.19 and 24.
 
-- **Linux、macOS：** 还需要 Bash。精简 Linux 镜像可能没有自带，需要另装；Linux 的进程清理要能读取 `/proc`。
-- **Windows 10/11：** 安装 Git for Windows，包含 Git Bash，并保留系统自带的 Windows PowerShell。可以从 PowerShell、cmd 或 Git Bash 启动。
-- **WSL：** 按 Linux 安装 Node、Git、rg 和 Bash，都在 WSL 里运行，不要混用 Windows 的 Node。
+- **Linux, macOS:** Bash is also required. Minimal Linux images may need it installed separately; process cleanup needs access to `/proc` on Linux.
+- **Windows 10/11:** install Git for Windows, including Git Bash, and keep the built-in Windows PowerShell available. Start from PowerShell, cmd, or Git Bash.
+- **WSL:** install and run Linux Node, Git, rg, and Bash inside WSL. Do not mix in Windows Node.
 
-下面以 DeepSeek 为例。Bash 命令适用于 Linux、macOS 和 Windows 的 Git Bash，PowerShell 写法在后面。先下载仓库并安装依赖：
+The example below uses DeepSeek. Its Bash commands work on Linux, macOS, and Git Bash on Windows; PowerShell commands follow below. Download the repository and install its dependencies:
 
 ```bash
 git clone https://github.com/pollenkun/Mountains.git
@@ -93,14 +93,14 @@ cd Mountains
 npm ci
 ```
 
-设置密钥和累计费用上限。把 `你的密钥` 换成自己的 DeepSeek API 密钥：
+Set your API key and cumulative spending cap. Replace `your-key` with your DeepSeek API key:
 
 ```bash
-export DEEPSEEK_API_KEY="你的密钥"
+export DEEPSEEK_API_KEY="your-key"
 export MOUNTAINS_BUDGET=10
 ```
 
-`MOUNTAINS_BUDGET` 是所有运行累计花费的上限（元）。下面创建 `config.json`，把每次运行的上限设为 2 元：
+`MOUNTAINS_BUDGET` caps the total spent across all runs (in CNY). Create `config.json` to cap each run at 2 CNY:
 
 ```bash
 cat > config.json <<'JSON'
@@ -108,7 +108,7 @@ cat > config.json <<'JSON'
 JSON
 ```
 
-先创建一个可以丢弃的示例目录。里面的 `add` 故意把加法写成了减法：
+Create a disposable example directory. Its `add` function deliberately subtracts instead of adding:
 
 ```bash
 mkdir demo-workspace
@@ -117,106 +117,106 @@ exports.add = (a, b) => a - b;
 JS
 ```
 
-Mountains 会直接修改 `--workspace` 里的文件，请在有版本管理或可以丢弃的目录里运行。
+Mountains edits the files in `--workspace` directly. Run it in a directory under version control, or one you can throw away.
 
-`--workspace` 只是任务目录，不是系统级隔离。命令以当前用户权限运行，可能读取或修改目录外的文件，也可能访问网络。默认规则会自动允许一般命令、文件修改和网络访问，不会逐项询问。请在隔离环境中运行不可信任务；仅使用一个可以丢弃的目录，不能保护电脑上的其他文件。
+`--workspace` sets the task directory; it is not an operating-system sandbox. Commands run with your user account's permissions and can read or modify files outside that directory and access the network. The default policy automatically allows ordinary commands, file changes and network access without asking each time. Run untrusted tasks in an isolated environment; a disposable directory alone does not protect other files on your computer.
 
-运行任务。这一步会调用 DeepSeek，并产生模型费用：
+Run the task. This step calls DeepSeek and incurs model charges:
 
 ```bash
-npm run mountains -- run --task "修复 add.cjs 中的 add，让它返回两个数的和" --workspace ./demo-workspace --config config.json
+npm run mountains -- run --task "Fix add in add.cjs so it returns the sum of two numbers" --workspace ./demo-workspace --config config.json
 ```
 
-结束后，终端会显示任务结果、估算费用和记录目录。可以检查加法是否修好了：
+When it finishes, the terminal shows the result, estimated cost and recording directory. Check that the example was fixed:
 
 ```bash
 node -e "require('node:assert/strict').equal(require('./demo-workspace/add.cjs').add(2, 3), 5); console.log('OK')"
 ```
 
-输出 `OK` 表示这个例子通过。处理自己的项目时，把 `--workspace` 换成项目路径，把 `--task` 换成任务描述。以上命令都在 Mountains 仓库目录中执行。
+An `OK` result means this example passes. For your own project, replace `--workspace` with its path and `--task` with your request. Run all the commands above from the Mountains repository directory.
 
 ### Windows PowerShell
 
-如果用 PowerShell，在 Mountains 仓库目录中执行下面这些命令。这里用 Node 写文件，避开 Windows PowerShell 5.1 写入 BOM 的问题：
+If you use PowerShell, run these commands from the Mountains repository directory. Node writes the files to avoid the BOM added by Windows PowerShell 5.1:
 
 ```powershell
 npm.cmd ci
-$env:DEEPSEEK_API_KEY = "你的密钥"
+$env:DEEPSEEK_API_KEY = "your-key"
 $env:MOUNTAINS_BUDGET = "10"
 node -e "require('node:fs').writeFileSync('config.json', JSON.stringify({billingCurrency:'CNY',limits:{maxCost:2}}))"
 node -e "require('node:fs').mkdirSync('demo-workspace',{recursive:true});require('node:fs').writeFileSync('demo-workspace/add.cjs','exports.add = (a, b) => a - b;\n')"
-npm.cmd run mountains -- run --task "修复 add.cjs 中的 add，让它返回两个数的和" --workspace ./demo-workspace --config config.json
+npm.cmd run mountains -- run --task "Fix add in add.cjs so it returns the sum of two numbers" --workspace ./demo-workspace --config config.json
 ```
 
-最后一条命令会调用 DeepSeek，产生模型费用，也会直接修改示例目录。
+The last command calls DeepSeek, incurs model charges, and edits the example directory directly.
 
-命令工具的 `shellScript` 用 Bash 语法。`argv` 直接调用原生程序；`npm.cmd`、`.bat` 要通过 `cmd.exe /c` 或 Git Bash 调用。Windows PowerShell 用来管理子进程，系统策略禁用它时，命令工具不能运行。
+The command tool uses Bash syntax for `shellScript`. Direct `argv` calls need a native executable; run `npm.cmd` and `.bat` files through `cmd.exe /c` or Git Bash. Windows PowerShell manages child processes. If system policy blocks it, the command tool cannot run.
 
-### 命令和后台进程
+### Commands and background processes
 
-`command_run` 用来运行临时命令。命令结束、超时或取消时，会尝试清理它启动的进程。需要长期保留的服务，请在单独管理的终端或服务里启动，不要靠命令末尾的 `&` 留在后台。
+`command_run` runs temporary commands. It attempts to clean up their processes when the command ends, times out, or is cancelled. Start long-running services in a separately managed terminal or service, rather than relying on a trailing `&` to keep them alive.
 
-Windows 用 Job Object 管理进程。Linux 在已有的用户级 systemd 支持 `systemd-run --expand-environment=no` 时，先把命令放进独立的 scope，结束后检查整个 scope 是否为空。这里不新增 Python 运行时要求，也不会替你配置系统服务。
+Windows uses Job Objects. On Linux with an available user-systemd manager and support for `systemd-run --expand-environment=no`, the command enters its own scope before starting, and cleanup checks that the whole scope is empty. This adds no Python runtime requirement and does not configure system services for you.
 
-macOS 和没有可用用户级 systemd 的 Linux 只能尽力清理。结果会明确标出清理未确认；过早脱离的后代仍可能遗留。退出码为 0，不代表所有后台进程都已退出。它也不是沙箱，不保证主进程被强杀或系统崩溃后能自动清理。
+macOS and Linux without usable user-systemd have best-effort cleanup. Results explicitly mark cleanup as unconfirmed; descendants that detach too early can survive. Exit code 0 does not mean every background process has stopped. This is not a sandbox, and cleanup is not guaranteed after the host process is forcibly killed or the system crashes.
 
-### 记录和费用
+### Recordings and spending
 
-运行记录、回放、归档和费用账本默认放在主目录的 `.mountains` 下，Windows 是 `%USERPROFILE%\.mountains`。设置 `MOUNTAINS_HOME` 可以换目录。配置文件或 `--spend-ledger` 指定的账本路径优先。运行输出、费用账本、检查点和归档目录必须放在任务工作区之外。
+Recordings, replays, archives, and the spending ledger go in `.mountains` under your home directory (`%USERPROFILE%\.mountains` on Windows). Set `MOUNTAINS_HOME` to use another directory. A ledger path set in the config or through `--spend-ledger` takes precedence. Run output, the spending ledger, checkpoints, and archives must stay outside the task workspace.
 
-设置了 `MOUNTAINS_HOME` 时，如果 `~/.mountains/spend.jsonl` 已有账本、新目录还没有，CLI 会先停下来。把旧账本搬过去，或用 `--spend-ledger` 继续用原路径，累计费用就不会从零开始。
+When `MOUNTAINS_HOME` is set, if `~/.mountains/spend.jsonl` already holds a ledger and the new directory has none, the CLI stops first. Move the old ledger over, or keep its original path with `--spend-ledger`, so cumulative spending does not restart at zero.
 
-编译缓存另外存放：Linux 用 `$XDG_CACHE_HOME`（默认 `~/.cache`），macOS 用 `~/Library/Caches`，Windows 用 `%LOCALAPPDATA%`，再加 `mountains/node-compile-cache`。缓存不可用不影响启动。
+The compile cache is separate: Linux uses `$XDG_CACHE_HOME` (default `~/.cache`), macOS uses `~/Library/Caches`, and Windows uses `%LOCALAPPDATA%`, followed by `mountains/node-compile-cache`. An unavailable cache does not prevent startup.
 
-检查点也会保存文件工具修改前的 Git 忽略文件。通过命令修改的忽略文件，不保证能恢复到修改前；重要文件还是要另外备份。
+Checkpoints also save Git-ignored files before file tools change them. Changes to ignored files made by commands may not be recoverable. Keep a separate backup of important files.
 
-### 技能
+### Skills
 
-技能是一个放着 `SKILL.md` 的文件夹，格式和 [Agent Skills](https://agentskills.io/specification) 一样，别处写好的技能可以直接用：
+A skill is a folder holding `SKILL.md` in the [Agent Skills](https://agentskills.io/specification) format, so skills written for other agents work as they are:
 
 ```markdown
 ---
 name: changelog
-description: 按项目的格式写更新日志。要写或修改 CHANGELOG 时使用。
+description: Write changelog entries in the project's format. Use when writing or editing CHANGELOG.
 ---
 
-用 Keep a Changelog 的标题……
+Use Keep a Changelog headings…
 ```
 
-Mountains 会在这些地方找技能，同名时前面的优先：项目里的 `.mountains/skills` 和 `.agents/skills`（从工作目录一直找到仓库根目录）、配置里 `skills.dirs` 列出的文件夹、`~/.mountains/skills`、`~/.agents/skills`。
+Mountains looks for skills here, and the first one found wins a name: the project's `.mountains/skills` and `.agents/skills` (from the workspace up to the repository root), the folders listed in `skills.dirs` in the config, `~/.mountains/skills`, and `~/.agents/skills`.
 
-模型只看到每个技能的名字和说明，需要时再用 `skill` 工具读取全文和附带的文件。任务以 `/技能名` 开头时，会直接带上这个技能，例如 `--task "/changelog 写 2.1 版本"`。没有任何技能时，模型看到的工具和提示词与上面测试的版本完全一样。
+The model sees only each skill's name and description, and loads the full instructions and bundled files with the `skill` tool when it needs them. A task that starts with `/skill-name` brings that skill in directly, for example `--task "/changelog write the 2.1 entry"`. With no skills installed, the model sees exactly the tools and prompt of the version measured above.
 
-项目里自带的技能来自仓库，可能让模型运行脚本，所以默认要有人批准才会加载；命令行版运行时没人可问，默认就不加载。信得过的技能可以在配置里按名字放行，`*` 匹配任意字符：
+Project skills come from the repository and may tell the model to run scripts, so by default someone has to approve them before they load; a CLI run has no one to ask, so it does not load them. Allow the ones you trust by name in the config; `*` matches any characters:
 
 ```json
 { "skills": { "permissions": { "changelog": "allow", "deploy-*": "deny" } } }
 ```
 
-### 检查
+### Checks
 
-查看帮助，不需要密钥，也不调用模型：
+Help requires no API key and sends no model request:
 
 ```bash
 npm run mountains -- --help
 ```
 
-检查代码。这些测试在本地跑，不调用付费模型：
+Check the code. These tests run locally and make no paid model calls:
 
 ```bash
 npm run check
 ```
 
-只跑办公、日常和 Coding 场景：
+Run only the office, daily-work and coding scenarios:
 
 ```bash
 npm run test:scenarios
 ```
 
-这些场景用临时 CSV、Markdown、文本和代码文件，实际执行文件操作、命令、检查点和恢复。模型回复用固定脚本或本地模拟接口，不代表真实模型的任务成功率，也不测试 Word、Excel 等二进制格式。多轮和会话恢复测试用引擎接口；Preview 1 CLI 仍是单任务。
+These scenarios use temporary CSV, Markdown, text and source files, with real file operations, commands, checkpoints and recovery. Model responses come from fixed scripts or a local mock server. They do not measure real-model task success or test Word/Excel binary formats. Multi-request and session-restoration tests use the engine API; the Preview 1 CLI remains single-task.
 
-测试还需要 Python 3。Linux、macOS 默认用 `python3`，Windows 默认用 `python`，也可以用 `MOUNTAINS_PYTHON` 指定已有的解释器。Windows 要允许创建符号链接，才能跑相关测试。POSIX 权限、特殊文件名和 macOS 沙箱测试只在对应系统上跑。
+The tests also need Python 3: `python3` on Linux/macOS, or `python` on Windows. Use `MOUNTAINS_PYTHON` to select another installed interpreter. Windows must allow symlink creation for those tests to run. POSIX permissions, special filenames, and macOS sandbox tests run only on the relevant systems.
 
-## 许可证
+## License
 
 [Apache License 2.0](LICENSE)
