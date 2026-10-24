@@ -220,3 +220,13 @@ The tests also need Python 3: `python3` on Linux/macOS, or `python` on Windows. 
 ## License
 
 [Apache License 2.0](LICENSE)
+
+## Support Mountains
+
+If Mountains has been useful to you, you're welcome to buy me a coffee via the WeChat appreciation code below. Your support helps me keep building and improving Mountains.
+
+Support is entirely optional. Ideas, bug reports, and contributions are just as welcome. Thank you for being part of Mountains!
+
+<p align="center">
+  <img src="assets/wechat-appreciation.jpg" alt="WeChat appreciation code — support Mountains" width="320" />
+</p>

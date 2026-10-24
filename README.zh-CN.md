@@ -220,3 +220,13 @@ npm run test:scenarios
 ## 许可证
 
 [Apache License 2.0](LICENSE)
+
+## 支持 Mountains
+
+如果 Mountains 对你有帮助，欢迎通过下方的微信赞赏码请我喝杯咖啡。你的支持，是我继续开发和打磨 Mountains 的动力。
+
+赞赏完全自愿。提建议、报问题、贡献代码，也都是很好的支持。谢谢你和 Mountains 一起成长！
+
+<p align="center">
+  <img src="assets/wechat-appreciation.jpg" alt="微信赞赏码 — 支持 Mountains" width="320" />
+</p>
