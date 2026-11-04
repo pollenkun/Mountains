@@ -27,6 +27,13 @@ test("null tool arguments yield a recoverable tool error rather than rejecting t
  assert(messages.some(m => m.role === "tool" && m.content.includes("参数必须是 JSON 对象")));
 });
 
+test("a command call with misnamed arguments is the model's to correct and does not end the session", async t => {
+ const f = fixture(t, [reply([{ id: "bad", name: "command_run", argumentsJson: '{"shell":"ls"}' }]), reply()]);
+ const result = await f.session.run("Run a command.");
+ assert.equal(result.status, "completed"); assert.equal(f.adapter.requests.length, 2);
+ assert(f.adapter.requests[1]!.messages.some(m => m.role === "tool" && m.content.includes("argv")));
+});
+
 for (const ids of [["same", "same"], ["", "other"], ["  ", "other"]]) {
  test(`invalid call IDs ${JSON.stringify(ids)} cannot execute or poison snapshots`, async t => {
   let executed = 0;
@@ -102,11 +109,13 @@ test("recovered null arguments survive later program compaction", async t => {
  const compacted = await f.session.compactNow(); assert(compacted.revision); assert.equal(f.adapter.requests.length, 3);
 });
 
-test("assistant index failure leaves no pending tool group in the recoverable snapshot", async t => {
- const response = reply([{ id: "not-executed", name: "file_read", argumentsJson: '{"path":"missing"}' }]); response.message.content = "assistant fixture";
- const f = fixture(t, [response], { allowSessionSnapshots: true });
+test("a record the search index refuses leaves the run going and says so once", async t => {
+ const response = reply([{ id: "read", name: "file_read", argumentsJson: '{"path":"missing"}' }]); response.message.content = "assistant fixture";
+ const events: string[] = [];
+ const f = fixture(t, [response, reply()], { allowSessionSnapshots: true, onEvent: e => { if (e.type === "error") events.push(e.message); } });
  const index = (f.session as unknown as { sessionIndex: { record: (text: string, meta: { role: string }) => unknown } }).sessionIndex;
  const original = index.record.bind(index); index.record = (text, meta) => { if (meta.role === "assistant") throw new Error("SESSION_INDEX_FULL"); return original(text, meta); };
- assert.equal((await f.session.run("Keep snapshot consistent.")).status, "limit");
+ assert.equal((await f.session.run("Keep snapshot consistent.")).status, "completed");
+ assert.equal(f.adapter.requests.length, 2); assert.equal(events.length, 1);
  assert.doesNotThrow(() => f.session.exportSnapshot());
 });

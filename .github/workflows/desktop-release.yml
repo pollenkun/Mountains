@@ -1,0 +1,55 @@
+name: Build desktop update packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+            script: release:mac
+            extension: dmg
+          - os: windows-11-arm
+            platform: win32
+            arch: arm64
+            script: release:windows
+            extension: exe
+          - os: windows-2022
+            platform: win32
+            arch: x64
+            script: release:windows:x64
+            extension: exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Check native runner architecture
+        run: node -e "if(process.arch!=='${{ matrix.arch }}') throw new Error('Runner architecture does not match the artifact')"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: node --test apps/desktop/test/updates.test.ts
+      - name: Build installer without publishing
+        run: npm run ${{ matrix.script }} -w apps/desktop
+      - name: Generate update metadata from installer bytes
+        shell: bash
+        run: |
+          shopt -s nullglob
+          installers=(apps/desktop/release/Mountains-*.${{ matrix.extension }})
+          if [ "${#installers[@]}" -ne 1 ]; then echo "Expected exactly one installer"; exit 1; fi
+          node apps/desktop/scripts/release-feed.ts '${{ matrix.platform }}' '${{ matrix.arch }}' "${installers[0]}" apps/desktop/release-feed apps/desktop/deploy/release-notes.md
+      - name: Verify publish files match the build
+        run: node apps/desktop/scripts/verify-release.ts apps/desktop/release-feed apps/desktop/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mountains-${{ matrix.platform }}-${{ matrix.arch }}
+          path: apps/desktop/release-feed/*
+          if-no-files-found: error

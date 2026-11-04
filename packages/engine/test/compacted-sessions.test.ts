@@ -97,3 +97,18 @@ test("after /name, a skill only the user starts can read its bundled files, also
 	assert.equal((await resumed.run("Check the list again.")).status, "completed");
 	assert.match(again.requests[1]!.messages.find(m => m.role === "tool" && m.toolCallId === "r2")?.content ?? "", /^<skill_file skill="deploy"/);
 });
+
+test("a saved conversation goes on under another model only when asked to", async t => {
+	const f = fixture(t);
+	const first = new AgentSession(f.options(new ScriptedModelAdapter([reply("First answer.")])));
+	assert.equal((await first.run("First question")).status, "completed");
+	const snapshot = JSON.parse(JSON.stringify(first.exportSnapshot()));
+	const other = { model: "deepseek-v4-pro" } as const;
+	assert.throws(() => new AgentSession(f.options(new ScriptedModelAdapter([]), other)).restoreSnapshot(snapshot));
+	const adapter = new ScriptedModelAdapter([{ ...reply("Second answer."), responseModel: "deepseek-v4-pro" }]);
+	const next = new AgentSession(f.options(adapter, other));
+	next.restoreSnapshot(snapshot, { acrossModels: true });
+	assert.equal((await next.run("Second question")).status, "completed");
+	assert.equal(adapter.requests[0]!.model, "deepseek-v4-pro");
+	assert(adapter.requests[0]!.messages.some(m => m.role === "assistant" && m.content === "First answer."));
+});

@@ -111,13 +111,13 @@ test("a tight output limit has the same stopping point with approval off or on u
 	assert.equal(off.mainRequests, 1); assert.equal(off.readCalls, 1); assert.equal(off.reservations.length, 1);
 });
 
-test("legacy defaults stay unchanged, while approval always implies request protection", async (t) => {
+test("request protection is on unless turned off, and approval always implies it", async (t) => {
 	const run = fixture(t); const limits = { maxInputTokens: 22_000 };
-	const omitted = await run(false, { limits }); const disabled = await run(false, { requestGuard: false, limits });
-	sameReadOnlyOutcome(omitted, disabled); assert.equal(omitted.summary.status, "completed"); assert.equal(omitted.mainRequests, 2);
-	assert.deepEqual(omitted.reservations, []);
-	const guarded = await run(false, { requestGuard: true, limits });
+	const disabled = await run(false, { requestGuard: false, limits });
+	assert.equal(disabled.summary.status, "completed"); assert.equal(disabled.mainRequests, 2);
+	assert.deepEqual(disabled.reservations, []);
+	const guarded = await run(false, { requestGuard: true, limits }); const omitted = await run(false, { limits });
 	const implied = await run(true, { limits }); const cannotDisable = await run(true, { requestGuard: false, limits });
-	sameReadOnlyOutcome(guarded, implied); sameReadOnlyOutcome(guarded, cannotDisable);
-	assert.equal(guarded.mainRequests, 1);
+	sameReadOnlyOutcome(guarded, omitted); sameReadOnlyOutcome(guarded, implied); sameReadOnlyOutcome(guarded, cannotDisable);
+	assert.equal(guarded.mainRequests, 1); assert.equal(omitted.mainRequests, 1);
 });

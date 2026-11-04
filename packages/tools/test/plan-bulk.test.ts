@@ -50,7 +50,7 @@ process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr ||
 	t.after(() => { if (previous === undefined) delete process.env.MOUNTAINS_RG; else process.env.MOUNTAINS_RG = previous; });
 }
 
-test("bulk preserves legacy text, line/column addresses, raw hashes and canonical Unicode path order", async t => {
+test("search results match an independent line-by-line expectation, raw hashes and canonical Unicode path order", async t => {
 	const { root, context } = setup(t);
 	const unusualPath = process.platform === "win32" ? "space 中文 name.txt" : "space newline\nname.txt";
 	const sources = new Map<string, string>([
@@ -64,14 +64,20 @@ test("bulk preserves legacy text, line/column addresses, raw hashes and canonica
 	for (const [path, source] of sources) writeFileSync(join(root, path), source);
 	for (const [pattern, caseSensitive] of [["needle", true], ["^needle", true], ["Needle", true], ["needle$", true], ["中文", true], ["😀", true], ["^", true], ["NEEDLE", false]] as const) {
 		const args = { steps: [{ id: "find", op: "search", pattern, glob: "*.txt", caseSensitive }] };
-		const legacy = await createPlanTool().execute(args, context());
-		const bulk = await createPlanTool({}).execute(args, context());
-		assert.equal(legacy.ok, true, legacy.modelContent); assert.equal(bulk.ok, true, bulk.modelContent);
-		assert.equal(bulk.modelContent, legacy.modelContent, `pattern=${pattern}`);
-		assert.deepEqual(searchStep(bulk).results, searchStep(legacy).results);
-		assert.deepEqual(searchStep(bulk).paths, searchStep(legacy).paths);
-		assert.deepEqual(bulk.reads, legacy.reads);
-		assert.equal(bulk.details.scanBytes, legacy.details.scanBytes);
+		const bulk = await createPlanTool().execute(args, context());
+		assert.equal(bulk.ok, true, bulk.modelContent);
+		// An independent expectation (review A01): match each source line with a plain RegExp,
+		// a leading BOM removed and a CR kept as an ordinary character (so needle$ does not match CRLF lines),
+		// instead of comparing the tool with itself.
+		const regex = new RegExp(pattern, caseSensitive ? "u" : "iu");
+		const expected = [...sources].flatMap(([path, source]) => {
+			const lines = source.replace(/^\ufeff/, "").split("\n");
+			if (source.endsWith("\n")) lines.pop();
+			return lines.flatMap((line, index) => regex.test(line) ? [`${path}:${index + 1}`] : []);
+		}).sort();
+		assert.deepEqual(searchStep(bulk).results.map(match => `${match.path}:${match.line}`).sort(), expected, `pattern=${pattern}`);
+		assert.deepEqual(searchStep(bulk).paths, [...new Set(expected.map(entry => entry.slice(0, entry.lastIndexOf(":"))))].sort());
+		assert.equal(bulk.details.scanBytes, [...sources.values()].reduce((sum, source) => sum + Buffer.byteLength(source), 0));
 		for (const match of searchStep(bulk).results) assert.equal(match.hash, sha256(Buffer.from(sources.get(match.path)!)));
 		if (pattern === "needle" && caseSensitive) {
 			assert.deepEqual(searchStep(bulk).paths, [...sources.keys()].sort());

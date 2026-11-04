@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
-import type { AssistantMessage, Message, ToolSpec } from "@mountains/protocol";
-import { chainHash, estimateTokens, shortHash } from "./tokens.ts";
+import type { AssistantMessage, ImageData, Message, ToolSpec } from "@mountains/protocol";
+import { chainHash, estimateTokens, imageTokens, messageTokens, shortHash } from "./tokens.ts";
+
+/** Tool results whose images stay in requests: at least this many of the latest... */
+const IMAGES_KEPT = 3;
+/** ...and older ones leave this many at a time. */
+const IMAGES_DROPPED_TOGETHER = 6;
 
 export type SegmentKind = "system" | "tools" | "history" | "file_content" | "tool_output" | "masked_placeholder" | "overhead";
 
@@ -199,6 +204,11 @@ function stateOrdered<T extends object>(source: Record<string, unknown>, validat
 /** Characters of a failed result kept visible in its fold notice. */
 const FOLDED_FAILURE_CHARS = 400;
 
+/** A tool result's size for fold notices: its text plus its images by area. */
+function resultTokens(m: Extract<Message, { role: "tool" }>): number {
+	return estimateTokens(m.content) + (m.images ?? []).reduce((n, i) => n + imageTokens(i.width, i.height), 0);
+}
+
 /** Program notice that replaced one archived interaction (lossless fold). */
 /** Instructions of a skill the user named with /name, placed just before that message. */
 export const SKILL_NOTICE = "[Skill loaded at the user's request, not a new user instruction]\n";
@@ -228,7 +238,7 @@ function readContextState(raw: unknown): ContextStateV1 {
 		const turn = stateCounter(item.turn);
 		if (turn < previousTurn || turn > assistantCount) throw new Error("上下文快照历史轮数无效");
 		previousTurn = turn;
-		const rawMessage = stateRecord(item.message, ["role", "content", "reasoning", "toolCalls", "toolCallId", "name"]);
+		const rawMessage = stateRecord(item.message, ["role", "content", "reasoning", "toolCalls", "toolCallId", "name", "images"]);
 		const content = string(rawMessage.content);
 		let message: Message;
 		if (rawMessage.role === "user") {
@@ -251,9 +261,18 @@ function readContextState(raw: unknown): ContextStateV1 {
 			});
 			message = stateOrdered(rawMessage, { role: "assistant" as const, content, reasoning: string(rawMessage.reasoning), toolCalls });
 		} else if (rawMessage.role === "tool") {
-			stateRecord(item.message, ["role", "content", "toolCallId", "name"]);
+			stateRecord(item.message, ["role", "content", "toolCallId", "name", "images"]);
 			if (lastAssistantTurn === null || turn !== lastAssistantTurn + 1) throw new Error("上下文快照工具轮数无效");
-			message = stateOrdered(rawMessage, { role: "tool" as const, content, toolCallId: string(rawMessage.toolCallId, 4096, true), name: string(rawMessage.name, 4096, true) });
+			const images = Object.hasOwn(rawMessage, "images") ? stateArray(rawMessage.images, 16).map(rawImage => {
+				const img = stateRecord(rawImage, ["mimeType", "data", "width", "height"]);
+				if (img.mimeType !== "image/png" && img.mimeType !== "image/jpeg") throw new Error("上下文快照图片格式无效");
+				if (!Number.isSafeInteger(img.width) || !Number.isSafeInteger(img.height) || (img.width as number) < 1 || (img.height as number) < 1 || (img.width as number) > 10_000 || (img.height as number) > 10_000) throw new Error("上下文快照图片尺寸无效");
+				const data = string(img.data);
+				if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("上下文快照图片数据无效");
+				return stateOrdered(img, { mimeType: img.mimeType as ImageData["mimeType"], data, width: img.width as number, height: img.height as number });
+			}) : undefined;
+			if (images && !images.length) throw new Error("上下文快照图片列表为空");
+			message = stateOrdered(rawMessage, { role: "tool" as const, content, toolCallId: string(rawMessage.toolCallId, 4096, true), name: string(rawMessage.name, 4096, true), ...(images ? { images } : {}) });
 		} else throw new Error("上下文快照消息角色无效");
 		const next: ContextHistoryItemV1 = { message, turn };
 		if (message.role === "tool") {
@@ -403,6 +422,17 @@ export function toolTarget(name: string, argumentsJson: string): string {
 	return name;
 }
 
+/**
+ * What makes a later success a retry of the same operation: the full command and where it ran,
+ * not its shortened label. The same command in another directory is a different operation.
+ * A tool with nothing to name its target (computer use, session search) retries only with the
+ * same arguments; otherwise any later success of that tool would hide an unrelated failure.
+ */
+function retryIdentity(name: string, args: Record<string, unknown>, target: string, key: string): string {
+	if (name === "command_run") return JSON.stringify([args.cwd ?? ".", args.argv ?? args.command ?? args.shellScript ?? null, args.env ?? null]);
+	return target === name ? `${name}:${key}` : target;
+}
+
 /** 换版时由程序生成的执行记录：只列事实（改了哪些文件、跑了什么命令及退出码、读过什么、搜过什么），不含模型判断。 */
 export function checkpointText(removed: HistoryItem[], groups: number): string {
 	const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
@@ -474,7 +504,7 @@ export class ContextBuilder {
 	/** 取回工具名（写进折叠提示） */
 	readonly expandTool: string | undefined;
 	private readonly history: HistoryItem[] = [];
-	private readonly segmentCache = new WeakMap<HistoryItem, { content: string | undefined; tokensEst: number; hash: string }>();
+	private readonly segmentCache = new WeakMap<HistoryItem, { content: string | undefined; stale: boolean; tokensEst: number; hash: string }>();
 	private revisionCount = 0;
 	private assistantCount = 0;
 	private readonly staticSegments: Segment[];
@@ -533,7 +563,7 @@ export class ContextBuilder {
 		if (state.configHash !== this.configurationHash()) throw new Error("上下文快照配置与当前会话不一致");
 		for (const item of state.history) {
 			if (item.maskedContent === undefined || item.message.role !== "tool" || !item.meta) continue;
-			const tokens = estimateTokens(item.message.content);
+			const tokens = resultTokens(item.message);
 			const { name } = item.message, meta = item.meta;
 			if (!(this.expandTool && FOLD_REASONS.some(reason => item.maskedContent === foldedPlaceholder(name, meta, tokens, reason, this.expandTool!)))) throw new Error("上下文快照占位内容与元信息不一致");
 		}
@@ -542,6 +572,20 @@ export class ContextBuilder {
 		this.history.push(...state.history);
 		this.revisionCount = state.revisionCount;
 		this.assistantCount = state.assistantCount;
+	}
+
+	/** A new agent's start: this conversation up to its last closed tool group, so the provider's cache still applies. */
+	forkInto(other: ContextBuilder): void {
+		if (other.history.length || other.assistantCount) throw new Error("只能向空上下文复制对话");
+		const answered = new Set(this.history.flatMap(item => item.message.role === "tool" ? [item.message.toolCallId] : []));
+		let end = this.history.length;
+		for (let i = end - 1; i >= 0; i--) {
+			const message = this.history[i]!.message;
+			if (message.role === "assistant" && message.toolCalls.some(call => !answered.has(call.id))) { end = i; break; }
+		}
+		other.history.push(...structuredClone(this.history.slice(0, end)));
+		other.revisionCount = this.revisionCount;
+		other.assistantCount = end === this.history.length ? this.assistantCount : this.history[end]!.turn;
 	}
 
 	appendUser(content: string): void {
@@ -570,12 +614,16 @@ export class ContextBuilder {
 		this.assistantCount++;
 	}
 
-	appendToolResult(toolCallId: string, name: string, content: string, meta: ToolResultMeta): void {
-		this.history.push({ message: { role: "tool", toolCallId, name, content }, meta: { ...meta }, turn: this.assistantCount });
+	appendToolResult(toolCallId: string, name: string, content: string, meta: ToolResultMeta, images?: readonly ImageData[]): void {
+		this.history.push({ message: { role: "tool", toolCallId, name, content, ...(images?.length ? { images: images.map(i => ({ ...i })) } : {}) }, meta: { ...meta }, turn: this.assistantCount });
 	}
 
+	/** A folded result is text only: its images go with the original into the archive. */
 	private render(item: HistoryItem, candidateContent?: string): Message {
-		if (item.message.role === "tool" && (candidateContent ?? item.maskedContent) !== undefined) return { ...item.message, content: candidateContent ?? item.maskedContent! };
+		if (item.message.role === "tool" && (candidateContent ?? item.maskedContent) !== undefined) {
+			const { images: _images, ...text } = item.message;
+			return { ...text, content: candidateContent ?? item.maskedContent! };
+		}
 		return structuredClone(item.message);
 	}
 
@@ -585,6 +633,14 @@ export class ContextBuilder {
 
 	private renderPlan(candidate: ReadonlyMap<number, string> = new Map(), revision = this.revisionCount, history: readonly HistoryItem[] = this.history): ContextPlan {
 		const messages = history.map((h, i) => this.render(h, candidate.get(i)));
+		// Old screenshots stay in the archive, not in every request: all but the latest few leave the context,
+		// in batches so that the cached prefix changes only now and then.
+		const pictured = messages.flatMap((m, i) => m.role === "tool" && m.images?.length ? [i] : []);
+		const stale = new Set(pictured.slice(0, Math.floor(Math.max(0, pictured.length - IMAGES_KEPT) / IMAGES_DROPPED_TOGETHER) * IMAGES_DROPPED_TOGETHER));
+		for (const i of stale) {
+			const { images: _images, ...text } = messages[i] as Extract<Message, { role: "tool" }>;
+			messages[i] = { ...text, content: `${text.content}\n[This earlier image is no longer shown.]` };
+		}
 		const segments: Segment[] = this.staticSegments.map((s) => ({ ...s }));
 		messages.forEach((m, index) => {
 			const item = history[index];
@@ -593,9 +649,9 @@ export class ContextBuilder {
 			if (m.role === "tool") kind = masked ? "masked_placeholder" : (item?.meta?.kind ?? "tool_output");
 			const content = item && m.role === "tool" ? candidate.get(index) ?? item.maskedContent : undefined;
 			let cached = item ? this.segmentCache.get(item) : undefined;
-			if (!cached || cached.content !== content) {
+			if (!cached || cached.content !== content || cached.stale !== stale.has(index)) {
 				const text = JSON.stringify(m);
-				cached = { content, tokensEst: estimateTokens(text) + 4, hash: shortHash(text) };
+				cached = { content, stale: stale.has(index), tokensEst: messageTokens(m) + 4, hash: shortHash(text) };
 				if (item) this.segmentCache.set(item, cached);
 			}
 			segments.push({ kind, index, tokensEst: cached.tokensEst, hash: cached.hash, ...(masked ? { masked: true } : {}) });
@@ -664,7 +720,7 @@ export class ContextBuilder {
 		let seen = 0;
 		for (let i = this.history.length - 1; i >= 0; i--) {
 			const m = this.history[i]!.message;
-			if (m.role !== "user" || m.content.startsWith("[Runtime ") || m.content.startsWith("[Context checkpoint generated by the program")) continue;
+			if (m.role !== "user" || m.content.startsWith("[Runtime ") || m.content.startsWith("[Context checkpoint generated by the program") || m.content.startsWith(SKILL_NOTICE)) continue;
 			if (++seen === keep) return i;
 		}
 		return -1;
@@ -702,13 +758,14 @@ export class ContextBuilder {
 	 * answered yet, working notes and memory invalidations are never candidates.
 	 */
 	private losslessCandidates(cfg: ContextPolicy): Map<number, FoldReason> {
-		const calls = new Map<string, { name: string; args: Record<string, unknown>; target: string; key: string }>();
+		const calls = new Map<string, { name: string; args: Record<string, unknown>; target: string; retry: string; key: string }>();
 		const unseen = this.unseenFrom();
 		this.history.forEach((h) => {
 			if (h.message.role !== "assistant" || !h.message.toolCalls.length) return;
 			for (const c of h.message.toolCalls) {
 				const args = parsedToolArgs(c.argumentsJson) ?? {};
-				calls.set(c.id, { name: c.name, args, target: toolTarget(c.name, c.argumentsJson), key: JSON.stringify(args) });
+				const target = toolTarget(c.name, c.argumentsJson), key = JSON.stringify(args);
+				calls.set(c.id, { name: c.name, args, target, retry: retryIdentity(c.name, args, target, key), key });
 			}
 		});
 		const settled = this.userTurnBoundary(cfg.settledUserTurns ?? 2);
@@ -738,7 +795,7 @@ export class ContextBuilder {
 			if (i < unseen && h.maskedContent === undefined && meta.preserve !== "unresolved" && meta.preserve !== "memory-invalidation") {
 				let reason: FoldReason | undefined;
 				if (meta.preserve === "error") {
-					if (targets.get(call.name)?.has(call.target)) reason = "retried";
+					if (targets.get(call.name)?.has(call.retry)) reason = "retried";
 				} else if (call.name === "file_read" && typeof call.args.path === "string") {
 					if (edits.has(call.args.path) || meta.lines !== undefined && reads.get(call.args.path)?.covers(meta.lines)) reason = "superseded";
 				} else if (call.name !== "file_edit" && call.name !== "file_write" && call.name !== "task_note") {
@@ -749,7 +806,7 @@ export class ContextBuilder {
 			}
 			// Masked, protected and unseen later results still count; only failures are excluded.
 			if (meta.preserve === "error") continue;
-			remember(targets, call.name, call.target);
+			remember(targets, call.name, call.retry);
 			remember(keys, call.name, call.key);
 			if (typeof call.args.path !== "string") continue;
 			if (call.name === "file_edit" || call.name === "file_write") edits.add(call.args.path);
@@ -811,7 +868,7 @@ export class ContextBuilder {
 			results.forEach((h, j) => {
 				const reason = candidates.get(start + 1 + j);
 				if (!reason || !h.meta || h.meta.preserve || h.message.role !== "tool") return;
-				const tokens = estimateTokens(h.message.content);
+				const tokens = resultTokens(h.message);
 				const ph = foldedPlaceholder(h.message.name, h.meta, tokens, reason, expandTool);
 				if (estimateTokens(ph) >= tokens) return;
 				items[start + 1 + j]!.maskedContent = ph; maskedIndices.push(start + 1 + j); maskedRefs.push(h.meta.ref);
@@ -838,7 +895,7 @@ export class ContextBuilder {
 	compactionTailStart(tailTokens: number, maxShare = 1): number | null {
 		const unseen = this.unseenFrom();
 		const lastGroup = unseen < this.history.length ? unseen : -1;
-		const sizes = this.history.map(h => estimateTokens(JSON.stringify(this.render(h))) + 4);
+		const sizes = this.history.map(h => messageTokens(this.render(h)) + 4);
 		tailTokens = Math.min(tailTokens, Math.floor(sizes.reduce((a, b) => a + b, 0) * maxShare));
 		let boundary = this.history.length, size = 0;
 		for (let i = this.history.length - 1; i >= 0; i--) {
@@ -905,7 +962,10 @@ export class ContextBuilder {
 	 * evidence notice keep their place before it; the tail follows verbatim. The replaced messages,
 	 * earlier user messages included, are archived intact first.
 	 */
-	applyCompaction(summary: string, tailStart: number, reservedOutputTokens: number, hardLimitTokens: number, byModel: boolean): RevisionResult {
+	/** With requireSaving, a summary that would not make the context smaller is not published (null). */
+	applyCompaction(summary: string, tailStart: number, reservedOutputTokens: number, hardLimitTokens: number, byModel: boolean, requireSaving?: false): RevisionResult;
+	applyCompaction(summary: string, tailStart: number, reservedOutputTokens: number, hardLimitTokens: number, byModel: boolean, requireSaving: boolean): RevisionResult | null;
+	applyCompaction(summary: string, tailStart: number, reservedOutputTokens: number, hardLimitTokens: number, byModel: boolean, requireSaving = false): RevisionResult | null {
 		const before = this.plan().totalTokensEst;
 		const expandTool = this.expandTool;
 		if (!this.publicationGuard?.archiveInteraction || !expandTool) throw new ContextPublicationError("CONTEXT_REFERENCE_UNAVAILABLE", "压缩需要可验证的会话归档和取回工具");
@@ -925,6 +985,7 @@ export class ContextBuilder {
 		const turn = this.history[tailStart]?.turn ?? this.assistantCount;
 		const items = [...head.filter((h, i) => !this.compactable(h, i)), { message: { role: "user" as const, content: notice }, turn }, ...this.history.slice(tailStart)];
 		const next = this.renderPlan(new Map(), this.revisionCount + 1, items);
+		if (requireSaving && next.totalTokensEst >= before) return null;
 		this.publishRevision(items, next, archived, reservedOutputTokens, hardLimitTokens);
 		this.foldFloor = next.totalTokensEst;
 		return { reason: "compaction", maskedRefs: [ref], maskedIndices: [], removedGroups: removed.filter(h => h.message.role === "assistant").length, tokensBefore: before, tokensAfter: next.totalTokensEst };
@@ -949,7 +1010,7 @@ export class ContextBuilder {
 
 	private estimateItems(items: HistoryItem[]): number {
 		const stat = this.staticSegments.reduce((a, s) => a + s.tokensEst, 0);
-		return stat + items.reduce((a, h) => a + estimateTokens(JSON.stringify(this.render(h))) + 4, 0);
+		return stat + items.reduce((a, h) => a + messageTokens(this.render(h)) + 4, 0);
 	}
 }
 

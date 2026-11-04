@@ -87,3 +87,20 @@ test("native Windows short TEMP aliases preserve absolute resolution, relative p
 	assert.equal(workspace.contains(join(raw, "new", "state")), true, "state cannot evade the inside-workspace guard through a short ancestor name");
 	assert.equal(workspace.contains(join(dirname(raw), "elsewhere", "state")), false);
 });
+
+test("allowOutside keeps relative paths in the default workspace while opening explicit outside and home paths", t => {
+	const { parent, root } = fixture(t);
+	const outside = join(parent, "Outside");
+	mkdirSync(outside);
+	writeFileSync(join(outside, "note.txt"), "outside note");
+	const workspace = new Workspace(root, { allowOutside: true });
+	assert.equal(workspace.allowOutside, true);
+	assert.deepEqual(workspace.resolve("file.txt"), { abs: join(root, "file.txt"), rel: "file.txt" });
+	assert.deepEqual(workspace.resolve(join(outside, "note.txt")), { abs: join(outside, "note.txt"), rel: join(outside, "note.txt").replace(/\\/g, "/") });
+	assert.deepEqual(workspace.resolve(join(outside, "sub", "created.txt"), { forWrite: true }), {
+		abs: join(outside, "sub", "created.txt"),
+		rel: join(outside, "sub", "created.txt").replace(/\\/g, "/"),
+	});
+	assert.equal(workspace.contains(join(outside, "note.txt")), false);
+	assert.equal(workspace.contains(join(root, "file.txt")), true);
+});

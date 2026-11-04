@@ -9,21 +9,17 @@
  * Key 只从环境变量读取（按模型的供应商：DEEPSEEK_API_KEY、ZHIPU_API_KEY、MOONSHOT_API_KEY）。base URL 指向本机兼容代理时，
  * 代理负责注入鉴权，本进程不需要 Key。
  */
-import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { USAGE, parseRunArgs, parseReplayArgs } from "./cli-args.ts";
-import type { EngineEvent } from "@mountains/protocol";
+import { cmdSecret } from "./cli-secret.ts";
 import { AgentSession, BudgetGuard, DEFAULT_LIMITS, type RunSummary, replayAdapterFromRecording } from "@mountains/engine";
-import { ApprovalChatAdapter, ChatCompletionsAdapter, currencyOf, type Currency, type ModelAdapter, pricingFor, providerOf } from "@mountains/providers";
-import { projectSkillRoots, type SkillRoot, Workspace } from "@mountains/tools";
-import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
+import { billingLabel, currencyOf, type Currency, type ModelAdapter, pricingFor } from "@mountains/providers";
 import { expandHome, mountainsHome } from "./paths.ts";
+import { eventSink, freshOutDir, prepareRun, requireExternalStorage } from "./run-session.ts";
 
 const EXIT = { completed: 0, failed: 1, usage: 2, limit: 3, cancelled: 130 } as const;
-
-
 
 function usage(msg?: string): never {
 	if (msg) process.stderr.write(`错误：${msg}\n`);
@@ -36,167 +32,80 @@ function help(): never {
 	process.exit(0);
 }
 
-/** Per-project data outside the workspace: ~/.mountains/projects/<hash of the real workspace path>. */
-/** Project skills first, then the configured directories, then the user's own. */
-function skillRoots(workspaceRoot: string, dirs: readonly string[], configPath: string | null): SkillRoot[] {
-	const base = configPath ? dirname(resolve(configPath)) : process.cwd();
-	return [
-		...projectSkillRoots(workspaceRoot),
-		...dirs.map(dir => ({ dir: resolve(base, expandHome(dir)), source: "user" as const })),
-		{ dir: join(mountainsHome(), "skills"), source: "user" },
-		{ dir: join(homedir(), ".agents", "skills"), source: "user" },
-	];
-}
-
-function projectDir(workspaceRoot: string, home = mountainsHome()): string {
-	const root = existsSync(workspaceRoot) ? realpathSync(workspaceRoot) : resolve(workspaceRoot);
-	return join(resolve(home), "projects", createHash("sha256").update(root).digest("hex").slice(0, 16));
-}
-
-function requireExternalStorage(path: string, workspace: string): string {
-	const dest = resolve(path);
-	if (new Workspace(workspace).contains(dest)) throw new Error("运行数据、检查点与原文档案必须存放在任务工作区之外");
-	return dest;
-}
-
-function isLoopback(url: string): boolean {
-	try {
-		const h = new URL(url).hostname;
-		return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
-	} catch {
-		return false;
-	}
-}
-
-interface Common {
-	workspace: string;
-	outDir: string;
-	json: boolean;
-}
-
-function eventSink(outDir: string, json: boolean): (e: EngineEvent) => void {
-	const eventsPath = join(outDir, "events.jsonl");
-	return (e) => {
-		if (e.type !== "message.delta") appendFileSync(eventsPath, `${JSON.stringify(e)}\n`);
-		if (json) return;
-		// 人类可读的进度（stderr），不影响 stdout 的最终结果
-		if (e.type === "tool.requested") process.stderr.write(`· ${e.tool} ${typeof e.args === "string" ? e.args : JSON.stringify(e.args).slice(0, 160)}\n`);
-		else if (e.type === "tool.completed") process.stderr.write(`  ${e.ok ? "✓" : "✗"} ${e.summary.slice(0, 160)} (${e.durationMs}ms)\n`);
-		else if (e.type === "usage") process.stderr.write(`  [usage] 命中 ${e.usage.cacheRead ?? "?"} 未命中 ${e.usage.input ?? "?"} 输出 ${e.usage.output ?? "?"} ≈${e.cost?.toFixed(5) ?? "?"} ${e.currency}\n`);
-		else if (e.type === "error") process.stderr.write(`! ${e.message}\n`);
-	};
-}
-
-async function runWithSignals(session: AgentSession, task: string): Promise<RunSummary> {
+async function runWithSignals<T extends RunSummary>(session: { run(task: string, signal: AbortSignal): Promise<T> }, task: string, cleanup?: () => Promise<void>, fatalSignal?: AbortSignal): Promise<T> {
 	const ac = new AbortController();
 	let interrupts = 0;
 	const onSig = () => {
 		interrupts++;
 		if (interrupts === 1) {
-			process.stderr.write("\n收到中断，正在取消（再按一次强制退出）\n");
+			process.stderr.write("\n收到中断，正在取消并关闭辅助进程\n");
 			ac.abort();
-		} else process.exit(EXIT.cancelled);
+		} else { ac.abort(); process.stderr.write("取消已经开始，正在等辅助进程结束。\n"); }
 	};
 	process.on("SIGINT", onSig);
 	process.on("SIGTERM", onSig);
 	try {
-		return await session.run(task, ac.signal);
+		return await session.run(task, fatalSignal ? AbortSignal.any([ac.signal, fatalSignal]) : ac.signal);
 	} finally {
-		process.off("SIGINT", onSig);
-		process.off("SIGTERM", onSig);
+		try { await cleanup?.(); } finally {
+			process.off("SIGINT", onSig);
+			process.off("SIGTERM", onSig);
+		}
 	}
 }
 
-function finish(summary: RunSummary, outDir: string, json: boolean, extra: Record<string, unknown>): never {
+/** Exit only after stdout and stderr have passed everything on: a slow pipe must receive the whole result. */
+async function exitWhenFlushed(code: number): Promise<never> {
+	process.exitCode = code;
+	await Promise.all([process.stdout, process.stderr].map((stream) => new Promise<void>((done) => {
+		stream.once("error", () => done());
+		stream.write("", () => done());
+	})));
+	process.exit(code);
+}
+
+async function finish(summary: RunSummary, outDir: string, json: boolean, extra: Record<string, unknown>, model = ""): Promise<never> {
 	const out = { ...summary, ...extra, outDir };
-	writeFileSync(join(outDir, "summary.json"), `${JSON.stringify(out, null, 2)}\n`);
+	writeFileSync(join(outDir, "summary.json"), `${JSON.stringify(out, null, 2)}\n`, { mode: 0o600 });
+	const costText = billingLabel(model) ? "未计费" : `估算 ${summary.totals.cost.toFixed(5)} ${summary.totals.currency}`;
 	if (json) process.stdout.write(`${JSON.stringify(out)}\n`);
 	else {
 		process.stdout.write(`${summary.finalText}\n`);
 		process.stderr.write(
-			`\n[${summary.status}] ${summary.reason}；${summary.turns} 轮，${summary.totals.requests} 次请求，命中 ${summary.totals.cacheRead} / 未命中 ${summary.totals.input} / 输出 ${summary.totals.output}，估算 ${summary.totals.cost.toFixed(5)} ${summary.totals.currency}；结果目录 ${outDir}\n`,
+			`\n[${summary.status}] ${summary.reason}；${summary.turns} 轮，${summary.totals.requests} 次请求，命中 ${summary.totals.cacheRead} / 未命中 ${summary.totals.input} / 输出 ${summary.totals.output}，${costText}；结果目录 ${outDir}\n`,
 		);
 	}
-	process.exit(EXIT[summary.status]);
+	return exitWhenFlushed(EXIT[summary.status]);
 }
 
 async function cmdRun(argv: string[]): Promise<void> {
 	const { values } = parseRunArgs(argv);
 	if (values.help) help();
-	if (!values.workspace) usage("缺少 --workspace");
-	if (!values.task === !values["task-file"]) usage("--task 与 --task-file 必须且只能给一个");
-	const task = values.task ?? readFileSync(values["task-file"] as string, "utf8");
-	const loaded = loadConfig(values.config ? resolve(values.config) : null, values["base-url"] ? { baseUrl: values["base-url"] } : {});
-	const cfg = loaded.config;
-	const spendLedger = resolve(expandHome(values["spend-ledger"] ?? (loaded.spendLedgerExplicit ? cfg.spendLedger : join(mountainsHome(), "spend.jsonl"))));
-	const legacyLedger = resolve(expandHome(DEFAULT_CONFIG.spendLedger));
-	if (values["spend-ledger"] === undefined && !loaded.spendLedgerExplicit && spendLedger !== legacyLedger
-		&& !existsSync(spendLedger) && existsSync(legacyLedger)) {
-		throw new Error(`检测到旧累计花费台账：${legacyLedger}。请先将其迁移到 ${spendLedger}，或用 --spend-ledger 显式指定原路径；为避免重置累计预算，本次未发出请求。`);
+	const prepared = await prepareRun(values, usage);
+	let summary: RunSummary;
+	const cleanupErrors: string[] = [];
+	try {
+		summary = await runWithSignals(prepared.session, prepared.task, async () => {
+			try { await prepared.cleanup(); }
+			catch (error) { cleanupErrors.push(String(error)); }
+		}, prepared.fatalSignal);
+	} catch (error) {
+		prepared.toolObserver?.dispose();
+		throw error;
 	}
-	const runId = values["run-id"] ?? `run_${randomUUID().slice(0, 12)}`;
-	const outDir = requireExternalStorage(values.out ?? join(mountainsHome(), "runs", runId), resolve(values.workspace));
-	mkdirSync(outDir, { recursive: true });
-
-	let apiKey = process.env[cfg.apiKeyEnv];
-	if (!apiKey) {
-		if (isLoopback(cfg.baseUrl)) apiKey = "proxy-injected";
-		else usage(`环境变量 ${cfg.apiKeyEnv} 未设置（Key 只从环境变量读取）`);
+	if (cleanupErrors.length) summary = { ...summary, status: summary.status === "completed" ? "failed" : summary.status, reason: summary.reason + "; resource cleanup failed: " + cleanupErrors.join("; ") };
+	if (prepared.toolObserver) {
+		// Team may return a successful lead after a member's observer failed. Channel health is global.
+		try { if (!prepared.toolObserver.healthy) throw null; await prepared.toolObserver.finish(summary); }
+		catch { summary = { ...summary, status: "failed", reason: summary.reason + "; 工具执行控制器未完成核对，已有结果已保留" }; }
+		finally { prepared.toolObserver.dispose(); }
 	}
-	const provider = providerOf(cfg.model);
-	const adapter = new ChatCompletionsAdapter({ baseUrl: cfg.baseUrl, apiKey, ...(provider ? { provider } : {}) });
-	let modelApproval;
-	if (cfg.modelApproval) {
-		const settings = cfg.modelApproval;
-		let approvalKey = process.env[settings.apiKeyEnv];
-		if (!approvalKey) {
-			if (isLoopback(settings.baseUrl)) approvalKey = "proxy-injected";
-			else usage(`审批模型环境变量 ${settings.apiKeyEnv} 未设置（不会复用主模型 Key）`);
-		}
-		modelApproval = { settings, adapter: new ApprovalChatAdapter({
-			baseUrl: settings.baseUrl, apiKey: approvalKey, profile: settings.profile, timeoutMs: settings.timeoutMs,
-			...(settings.supportedEfforts ? { supportedEfforts: settings.supportedEfforts } : {}),
-			...(settings.effortMapping ? { effortMapping: settings.effortMapping } : {}),
-			...(settings.maxTokensField ? { maxTokensField: settings.maxTokensField } : {}),
-			...(settings.disabledReasoningEffort ? { disabledReasoningEffort: settings.disabledReasoningEffort } : {}),
-		}) };
-	}
-	const userId = cfg.userIdMode === "per-run" ? `mtn-${runId}` : cfg.userIdMode === "fixed" ? cfg.userIdFixed : undefined;
-	const budget = BudgetGuard.fromEnv(spendLedger, currencyOf(cfg.model, cfg.billingCurrency) ?? "USD");
-	const ws = new Workspace(resolve(values.workspace));
-	const session = new AgentSession({
-		workspace: resolve(values.workspace),
-		dataDir: outDir,
-		adapter,
-		model: cfg.model,
-		...(cfg.billingCurrency !== undefined ? { billingCurrency: cfg.billingCurrency } : {}),
-		thinking: cfg.thinking,
-		maxTokens: cfg.maxTokens,
-		limits: cfg.limits,
-		retry: cfg.retry,
-		...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
-		verbatimToolArguments: cfg.verbatimToolArguments,
-		...(userId ? { userId } : {}),
-		...(loaded.systemPrompt !== null ? { systemPrompt: loaded.systemPrompt } : {}),
-		approval: cfg.approval,
-		requestGuard: cfg.requestGuard,
-		...(modelApproval ? { modelApproval } : {}),
-		budget,
-		runId,
-		checkpoints: cfg.checkpoints,
-		// Folded and compacted originals stay with the project, outside the task checkout.
-		archiveDir: requireExternalStorage(join(projectDir(ws.root), "blobs"), ws.root),
-		toolOptions: { read: cfg.tools.read, batchEdit: cfg.tools.batchEdit, editFeedback: cfg.tools.editFeedback },
-		...(cfg.skills.enabled ? { skills: { roots: skillRoots(ws.root, cfg.skills.dirs, loaded.source), enable: cfg.skills.enable, permissions: cfg.skills.permissions } } : {}),
-		onEvent: eventSink(outDir, values.json),
-	});
-	writeFileSync(join(outDir, "config.json"), `${JSON.stringify({ source: loaded.source, sha256: loaded.sha256, config: cfg }, null, 2)}\n`);
-	const summary = await runWithSignals(session, task);
-	finish(summary, outDir, values.json, {
-		configSha256: loaded.sha256,
-		approvalRules: cfg.approval.rules.map((r) => r.id),
-		budget: { globalLimit: budget.globalLimit, globalSpent: budget.globalSpent, currency: budget.currency },
-	});
+	await finish(summary, prepared.outDir, values.json, {
+		cleanupErrors, configSha256: prepared.configSha256,
+		approvalRules: prepared.approvalRuleIds,
+		budget: { globalLimit: prepared.budget.globalLimit, globalSpent: prepared.budget.globalSpent, currency: prepared.budget.currency },
+		...(billingLabel(prepared.model) ? { billingLabel: "未计费" } : {}),
+	}, prepared.model);
 }
 
 async function cmdReplay(argv: string[]): Promise<void> {
@@ -215,7 +124,7 @@ async function cmdReplay(argv: string[]): Promise<void> {
 		if (!pricingFor(model, billingCurrency)) throw new Error(`录制模型 ${model} 没有 ${billingCurrency} 官方价格`);
 	}
 	const outDir = requireExternalStorage(values.out ?? join(mountainsHome(), "replays", `replay_${randomUUID().slice(0, 8)}`), resolve(values.workspace));
-	mkdirSync(outDir, { recursive: true });
+	freshOutDir(outDir);
 	const adapter: ModelAdapter = replayAdapterFromRecording(values.recording);
 	const session = new AgentSession({
 		workspace: resolve(values.workspace),
@@ -232,7 +141,7 @@ async function cmdReplay(argv: string[]): Promise<void> {
 		onEvent: eventSink(outDir, values.json),
 	});
 	const summary = await runWithSignals(session, String(input.task));
-	finish(summary, outDir, values.json, { replayOf: resolve(values.recording), note: "离线回放只模拟模型输出，不能作为成功率或缓存证据" });
+	await finish(summary, outDir, values.json, { replayOf: resolve(values.recording), note: "离线回放只模拟模型输出，不能作为成功率或缓存证据" });
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -243,6 +152,7 @@ try {
 		process.stdout.write(`mountains ${version}\n`);
 	} else if (cmd === "run") await cmdRun(rest);
 	else if (cmd === "replay") await cmdReplay(rest);
+	else if (cmd === "secret") await cmdSecret(rest);
 	else usage(cmd ? `未知命令 ${cmd}` : undefined);
 } catch (err) {
 	process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);

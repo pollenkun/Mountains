@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test, type TestContext } from "node:test";
@@ -28,14 +28,14 @@ interface ProcessState {
 	command: string;
 }
 
-function states(pids: number[]): Map<number, ProcessState> {
-	if (!pids.length) return new Map();
+function states(pids?: number[]): Map<number, ProcessState> {
+	if (pids&&!pids.length) return new Map();
 	const found = new Map<number, ProcessState>();
-	const result = spawnSync("/bin/ps", ["-p", pids.join(","), "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], {
-		encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 1000, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+	const result = spawnSync("/bin/ps", [...(pids?["-p",pids.join(",")]:["-ax"]), "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], {
+		encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 1000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
 	});
 	assert.ifError(result.error);
-	assert.ok(result.status === 0 || result.status === 1, result.stderr);
+	assert.ok(result.status===0||pids!==undefined&&result.status===1,result.stderr);
 	for (const line of result.stdout.split("\n")) {
 		if (!line.trim()) continue;
 		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/.exec(line);
@@ -54,29 +54,39 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
 	assert.ok(check(), message);
 }
 
-function setup(t: TestContext, mode: "normal" | "ignore-all") {
+function setup(t: TestContext, mode: "normal" | "ignore-all",holdChildPid=false) {
 	const root = mkdtempSync(join(tmpdir(), "mountains-detached-cleanup-"));
 	const fixture = join(root, "tree.cjs");
 	// This is the lawful reviewer fixture: a detached child, its ordinary child,
 	// and no filesystem mutation except PID files and a parent-exit barrier.
 	writeFileSync(fixture, `
 const { spawn } = require("node:child_process");
-const { writeFileSync, existsSync } = require("node:fs");
+const { writeFileSync, existsSync, renameSync } = require("node:fs");
 const { join } = require("node:path");
 const [root, role, mode] = process.argv.slice(2);
-writeFileSync(join(root, role + ".pid"), String(process.pid));
+if(role === "child" && ${holdChildPid}) {
+ process.on("SIGTERM", () => {}); setInterval(() => {}, 20);
+} else {
+const ready = join(root, role + ".pid"), staging = ready + "." + process.pid + ".tmp";
+writeFileSync(staging, String(process.pid), {flag:"wx",mode:0o600});
+renameSync(staging, ready);
 if (role !== "parent" || mode === "ignore-all") process.on("SIGTERM", () => {});
 setInterval(() => { if (role === "parent" && existsSync(join(root, "exit-parent"))) process.exit(0); }, 20);
 if (role === "parent") spawn(process.execPath, [__filename, root, "child", mode], { detached: true, stdio: "ignore" });
 if (role === "child") spawn(process.execPath, [__filename, root, "grandchild", mode], { stdio: "ignore" });
+}
 `);
 	const controller = new AbortController();
 	const ctx: ToolContext = { workspace: new Workspace(root), files: new FileStateTracker(), signal: controller.signal, toolCallId: t.name, approve: async () => "allow" };
 	const identities = new Map<number, ProcessState>();
 	const roles = ["parent", "child", "grandchild", "unrelated"];
+	const scripts=new Set([fixture,realpathSync(fixture)]),executables=new Set([process.execPath,realpathSync(process.execPath)]);
+	const owns=(row:ProcessState)=>[...executables].some(exe=>[...scripts].some(file=>roles.some(role=>row.command===[exe,file,root,role,mode].join(" "))));
+	const discover=()=>[...states().values()].filter(owns);
+	const invalidPidRecords:{role:string;rawBase64:string}[]=[];
 	const pids = () => roles.filter(role => existsSync(join(root, `${role}.pid`))).map(role => {
-		const pid = Number(readFileSync(join(root, `${role}.pid`), "utf8"));
-		assert.ok(Number.isInteger(pid) && pid > 1 && pid !== process.pid);
+		const raw=readFileSync(join(root,`${role}.pid`),"utf8"),pid=Number(raw);
+		if(!/^[1-9][0-9]*$/.test(raw)||!Number.isSafeInteger(pid)||pid<=1||pid===process.pid){invalidPidRecords.push({role,rawBase64:Buffer.from(raw).toString("base64")});throw new Error("invalid complete fixture PID record");}
 		return pid;
 	});
 	const remember = () => {
@@ -86,27 +96,45 @@ if (role === "child") spawn(process.execPath, [__filename, root, "grandchild", m
 	};
 	let unrelated: ChildProcess | undefined;
 	let running: Promise<ToolResult> | undefined;
-	const report: Record<string, unknown> = { name: t.name, passed: false };
+	const report: Record<string, unknown> = { name: t.name, passed: false, invalidPidRecords };
 	reports.push(report);
 	t.after(async () => {
 		controller.abort();
 		const cleanup: number[] = [];
-		try {
-			remember();
-			for (const [pid, current] of states(pids())) {
-				const prior = identities.get(pid);
-				if (!alive(current) || prior?.birth !== current.birth || !current.command.includes(root)) continue;
-				try { process.kill(pid, "SIGKILL"); cleanup.push(pid); } catch { /* The fixture may have exited. */ }
-			}
-			if (running) await running;
-			if (unrelated && unrelated.exitCode === null && unrelated.signalCode === null) await new Promise<void>(resolve => unrelated!.once("close", () => resolve()));
-			await waitFor(() => [...states(pids()).values()].every(row => !alive(row)), "all fixture processes must be cleaned up");
-			report.cleanupSignals = cleanup;
-			report.afterCleanup = [...states(pids()).values()];
-		} finally { rmSync(root, { recursive: true, force: true }); }
+		const errors:{stage:string;error:string}[]=[],candidates=new Set(identities.keys());
+		const attempt=async(stage:string,run:()=>unknown)=>{try{await run();}catch(error){errors.push({stage,error:String(error)});}};
+		// One unreadable or malformed PID must not skip every other owned child.
+		for(const role of roles)await attempt("read "+role,()=>{
+			const path=join(root,role+".pid");if(!existsSync(path))return;
+			const raw=readFileSync(path,"utf8"),pid=Number(raw);
+			if(!/^[1-9][0-9]*$/.test(raw)||!Number.isSafeInteger(pid)||pid<=1||pid===process.pid){
+				invalidPidRecords.push({role,rawBase64:Buffer.from(raw).toString("base64")});throw new Error("invalid complete fixture PID record");
+			}candidates.add(pid);
+		});
+		if(unrelated?.pid)candidates.add(unrelated.pid);
+		const collect=()=>{for(const row of discover()){candidates.add(row.pid);if(!identities.has(row.pid))identities.set(row.pid,row);}};
+		const stopKnown=async()=>{for(const pid of candidates)await attempt("stop "+pid,()=>{
+			const current=states([pid]).get(pid);if(!alive(current)||!current||!owns(current))return;
+			const prior=identities.get(pid)??current,latest=states([pid]).get(pid);
+			if(!alive(latest))return;
+			if(prior.birth!==latest?.birth||prior.command!==latest.command||!owns(latest))throw new Error("fixture process identity changed; no signal sent");
+			identities.set(pid,prior);try{process.kill(pid,"SIGKILL");cleanup.push(pid);}catch(error){if((error as NodeJS.ErrnoException).code!=="ESRCH")throw error;}
+		});};
+		await attempt("discover before stop",collect);await stopKnown();
+		if(running)await attempt("await command",()=>running);
+		// A child can exist before publishing its PID. After the actual command
+		// exits, keep discovering the exact owned argv until no producer remains.
+		const end=Date.now()+5000;
+		for(;;){let active:ProcessState[]=[];await attempt("discover after command",()=>{collect();active=discover().filter(alive);});if(!active.length)break;await stopKnown();if(Date.now()>=end){errors.push({stage:"late descendants",error:"owned fixture processes remain"});break;}await delay(10);}
+		if(unrelated)await attempt("await direct child",()=>waitFor(()=>unrelated!.exitCode!==null||unrelated!.signalCode!==null,"direct fixture child must close"));
+		await attempt("verify exits",()=>waitFor(()=>!discover().some(alive)&&[...states([...candidates]).values()].every(row=>!alive(row)),"all fixture processes must be cleaned up"));
+		report.cleanupSignals=cleanup;report.cleanupErrors=errors;
+		await attempt("record exits",()=>{report.afterCleanup=[...new Map([...states([...candidates]).values(),...discover()].map(row=>[row.pid,row])).values()];});
+		if(errors.length){report.passed=false;report.fixtureRootRetained=root;throw new Error("fixture cleanup failed: "+JSON.stringify(errors));}
+		rmSync(root,{recursive:true,force:true});
 	});
 	return {
-		root, controller, ctx, report, remember,
+		root, controller, ctx, report, remember, discover,
 		start(timeoutMs: number) {
 			unrelated = spawn(process.execPath, [fixture, root, "unrelated", mode], { detached: true, stdio: "ignore" });
 			// This fixture asserts direct PPID/PGID ancestry of the observational fallback.
@@ -212,4 +240,41 @@ test("ordinary parent exit cleans previously captured detached descendants witho
 	f.report.result = result.details;
 	f.report.signalledPids = [...signals];
 	f.report.passed = true;
+});
+
+test("an invalid complete fixture PID is preserved without skipping known process cleanup",{skip:unsupported,timeout:15_000},async t=>{
+	let cleanup!:()=>Promise<void>;
+	const f=setup({name:t.name,after:(run:()=>Promise<void>)=>{cleanup=run;}} as TestContext,"normal"),running=f.start(10_000);
+	let originals:ProcessState[]=[];
+	// Independent safety net for this deliberate teardown fault. Every signal
+	// still requires the captured birth and exact owned fixture command.
+	t.after(async()=>{
+		f.controller.abort();
+		for(const prior of originals){const now=states([prior.pid]).get(prior.pid);if(alive(now)&&now?.birth===prior.birth&&now.command===prior.command&&now.command.includes(f.root))try{process.kill(prior.pid,"SIGKILL");}catch(error){if((error as NodeJS.ErrnoException).code!=="ESRCH")throw error;}}
+		await running;await waitFor(()=>[...states(originals.map(row=>row.pid)).values()].every(row=>!alive(row)),"fault-injection fixture must not leave processes");
+	});
+	await f.ready();originals=[...f.remember().values()];
+	writeFileSync(join(f.root,"child.pid"),"invalid-complete-record");
+	await assert.rejects(cleanup(),/fixture cleanup failed/);
+	assert.deepEqual(f.report.cleanupErrors,[{stage:"read child",error:"Error: invalid complete fixture PID record"}]);
+	assert.deepEqual(f.report.afterCleanup,[]);
+	assert.deepEqual(f.report.invalidPidRecords,[{role:"child",rawBase64:Buffer.from("invalid-complete-record").toString("base64")}]);
+	assert.equal(f.report.fixtureRootRetained,f.root);assert.equal(readFileSync(join(f.root,"child.pid"),"utf8"),"invalid-complete-record");
+	f.report.expectedCleanupFailure="invalid complete child PID";f.report.passed=true;
+});
+
+test("cleanup discovers an already spawned child before it publishes a PID or becomes ready",{skip:unsupported,timeout:15_000},async t=>{
+	let cleanup!:()=>Promise<void>;
+	const f=setup({name:t.name,after:(run:()=>Promise<void>)=>{cleanup=run;}} as TestContext,"normal",true),running=f.start(10_000);let originals:ProcessState[]=[];
+	t.after(async()=>{
+		f.controller.abort();
+		for(const prior of originals){const now=states([prior.pid]).get(prior.pid);if(alive(now)&&now?.birth===prior.birth&&now.command===prior.command&&now.command.includes(f.root))try{process.kill(prior.pid,"SIGKILL");}catch(error){if((error as NodeJS.ErrnoException).code!=="ESRCH")throw error;}}
+		await running;await waitFor(()=>!f.discover().some(alive),"unpublished fixture child must not remain");
+	});
+	await waitFor(()=>{originals=f.discover();return ["parent","child","unrelated"].every(role=>originals.some(row=>row.command.endsWith(" "+f.root+" "+role+" normal")));},"owned child must exist before its PID publication");
+	const child=originals.find(row=>row.command.endsWith(" "+f.root+" child normal"))!;assert.equal(existsSync(join(f.root,"child.pid")),false);
+	f.report.before=originals;f.report.taskReadiness=false;await cleanup();
+	assert.deepEqual(f.report.cleanupErrors,[]);assert.ok((f.report.afterCleanup as ProcessState[]).every(row=>!alive(row)));
+	assert.ok((f.report.cleanupSignals as number[]).includes(child.pid),"cleanup must independently discover and stop the unpublished child");
+	assert.equal(f.discover().some(alive),false);f.report.passed=true;
 });

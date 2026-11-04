@@ -10,7 +10,10 @@ import { isolatedEnv } from "./env.ts";
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const OLD_USAGE = "用法：\n  mountains run --task <描述> | --task-file <路径> --workspace <路径> [--config <json>] [--json] [--out <目录>] [--run-id <id>] [--base-url <url>] [--spend-ledger <路径>]\n" +
-	"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n";
+	"  mountains models search <关键词>（最多 3 个模型）\n" +
+	"  mountains replay --recording <recording.jsonl> --workspace <路径> [--out <目录>] [--json]\n" +
+	"  mountains secret add|list|remove …（Computer-use 用的保存密码，见 mountains secret）\n" +
+	"  mountains computer-history [--days <天数>]（Computer-use 做过的操作，只记元数据）\n";
 
 function run(main: string, args: string[], preload?: string, noWrites = false): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	const home = mkdtempSync(join(tmpdir(), "mountains-entry-home-"));

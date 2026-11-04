@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, type BigIntStats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { classifyRisk, type Risk, type Workspace } from "@mountains/tools";
+import { classifyRisk, expandHomePath, type Risk, type Workspace } from "@mountains/tools";
 
 /** Exceeding a bound is an error for the caller to route to human approval. */
 export const APPROVAL_ACTION_LIMITS = Object.freeze({ argv: 128, argumentBytes: 256 * 1024, argumentNodes: 4096, argumentDepth: 24, pathBytes: 4096, pathDepth: 64, bindings: 1024, fileBytes: 1024 * 1024, totalFileBytes: 4 * 1024 * 1024, directoryEntries: 1024, totalDirectoryEntries: 4096, totalDirectoryBytes: 256 * 1024 });
@@ -120,17 +120,17 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 	let directoryReadBytes = 0;
 	const observed = new Map<string, BigIntStats>();
 	const directoryHashes = new Map<string, string>();
-	function inside(path: string): boolean {
-		// Share the tool boundary, including filesystem identity on Windows.
-		try { workspace.resolve(path, { forWrite: true }); return true; }
+	function inWorkspace(path: string): boolean {
+		// Physical workspace containment, including filesystem identity on Windows.
+		try { return workspace.contains(path); }
 		catch { return false; }
 	}
 	function checkPath(path: string): void {
 		if (!path || path.includes("\0") || Buffer.byteLength(path) > APPROVAL_ACTION_LIMITS.pathBytes) fail("invalid or oversized path");
 	}
-	function add(binding: ApprovalActionBinding): void {
+	function add(binding: ApprovalActionBinding, enumerateEntries = true): void {
 		if (bindings.length >= APPROVAL_ACTION_LIMITS.bindings) fail("too many filesystem bindings");
-		if (binding.kind === "directory") {
+		if (binding.kind === "directory" && enumerateEntries) {
 			let digest = directoryHashes.get(binding.path);
 			if (digest === undefined) {
 				digest = directoryHash(binding.path, observed.get(binding.path)!);
@@ -195,10 +195,52 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 	}
 	function bind(input: string, base: string, role: "cwd" | "target" | "argv-path", allowMissing: boolean, argumentIndex?: number): { path: string; kind: ApprovalActionBinding["kind"] } {
 		checkPath(input);
-		const lexical = isAbsolute(input) ? resolve(input) : resolve(base, input);
-		if (!inside(lexical)) fail("path is outside workspace");
+		const expanded = workspace.allowOutside ? expandHomePath(input) : input;
+		checkPath(expanded);
+		const lexical = isAbsolute(expanded) ? resolve(expanded) : resolve(base, expanded);
+		if (!workspace.allowOutside && !inWorkspace(lexical)) fail("path is outside workspace");
 		const checked = workspace.resolve(lexical, { forWrite: allowMissing }).abs;
+		checkPath(checked);
 		const index = argumentIndex === undefined ? {} : { argumentIndex };
+		if (workspace.allowOutside && !inWorkspace(checked)) {
+			// Outside-workspace path in Desktop: bind the target itself (and any lexical symlink)
+			// without enumerating shared outside directories such as /tmp or ~.
+			const lexicalStat = statOrMissing(lexical);
+			if (lexicalStat?.isSymbolicLink()) {
+				remember(lexical, lexicalStat);
+				add({ role: "symlink", path: lexical, kind: "symlink", linkTarget: readlinkSync(lexical), ...identity(lexicalStat), ...index }, false);
+			}
+			const found = statOrMissing(checked);
+			if (!found) {
+				if (!allowMissing) fail("required path does not exist");
+				let ancestor = dirname(checked);
+				for (let depth = 0; depth <= APPROVAL_ACTION_LIMITS.pathDepth; depth++) {
+					const ancStat = statOrMissing(ancestor);
+					if (ancStat) {
+						if (!ancStat.isDirectory()) fail("path parent is not a directory");
+						const realAncestor = realpathSync(ancestor);
+						const realStat = lstatSync(realAncestor, { bigint: true });
+						if (!realStat.isDirectory()) fail("path parent is not a directory");
+						add({ role: "parent", path: realAncestor, kind: "directory", dev: String(realStat.dev), ino: String(realStat.ino), mode: String(realStat.mode), ...index }, false);
+						break;
+					}
+					const parent = dirname(ancestor);
+					if (parent === ancestor) fail("path has no existing parent directory");
+					ancestor = parent;
+				}
+				add({ role, path: checked, kind: "missing", ...index }, false);
+				return { path: checked, kind: "missing" };
+			}
+			const kind = found.isFile() ? "file" : found.isDirectory() ? "directory" : undefined;
+			if (!kind) fail("unsupported filesystem object");
+			if (kind === "file") {
+				remember(checked, found);
+				add({ role, path: checked, kind, ...identity(found), sha256: fileHash(checked, found), ...index }, false);
+			} else {
+				add({ role, path: checked, kind, dev: String(found.dev), ino: String(found.ino), mode: String(found.mode), ...index }, false);
+			}
+			return { path: checked, kind };
+		}
 		let traversal = lexical;
 		const lexicalRelative = relative(root, lexical);
 		if (isAbsolute(lexicalRelative) || lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`)) {
@@ -213,7 +255,7 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 				if (entry?.isDirectory() || entry?.isSymbolicLink()) {
 					try {
 						const candidate = workspace.resolve(anchor).abs;
-						if (lstatSync(candidate).isDirectory()) real = candidate;
+						if (inWorkspace(candidate) && lstatSync(candidate).isDirectory()) real = candidate;
 					} catch { /* Keep looking for an existing in-workspace directory. */ }
 				}
 				if (real !== undefined) {
@@ -265,7 +307,7 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 				remember(current, stat);
 				const linkTarget = readlinkSync(current);
 				const real = realpathSync(current);
-				if (!inside(real)) fail("symlink resolves outside workspace");
+				if (!inWorkspace(real)) fail("symlink resolves outside workspace");
 				checkPath(real);
 				add({ role: "symlink", path: current, kind: "symlink", linkTarget, ...identity(stat), ...index });
 				// A final symlink may jump straight into an otherwise unvisited directory.
@@ -334,11 +376,12 @@ export function snapshotApprovalAction(workspace: Workspace, tool: string, args:
 			risk = classifyRisk(strings.map(arg => /^[\w@%+=:,./-]+$/.test(arg) ? arg : JSON.stringify(arg)).join(" "));
 			for (let i = 0; i < strings.length; i++) {
 				const arg = strings[i]!;
-				if (!arg || Buffer.byteLength(arg) > APPROVAL_ACTION_LIMITS.pathBytes) continue;
-				const candidate = isAbsolute(arg) ? resolve(arg) : resolve(cwd, arg);
-				if (!inside(candidate)) continue; // Never read external executable or argument contents.
+				const expandedArg = workspace.allowOutside ? expandHomePath(arg) : arg;
+				if (!expandedArg || Buffer.byteLength(expandedArg) > APPROVAL_ACTION_LIMITS.pathBytes) continue;
+				const candidate = isAbsolute(expandedArg) ? resolve(expandedArg) : resolve(cwd, expandedArg);
+				if (!inWorkspace(candidate)) continue; // Never read external executable or argument contents.
 				// Literal existing path arguments only; do not infer shell syntax or option semantics.
-				if (statOrMissing(candidate)) bind(arg, cwd, "argv-path", false, i);
+				if (statOrMissing(candidate)) bind(expandedArg, cwd, "argv-path", false, i);
 			}
 			limitations.push("Only literal existing workspace argv paths are bound. PATH executables, option-embedded paths, imports, environment-dependent paths and other indirect dependencies are not fully verified.");
 		}

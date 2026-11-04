@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mountains/protocol";
+import type { AssistantMessage, ModelBillingReceipt } from "@mountains/protocol";
 import { type ModelAdapter, type ModelRequest, type ModelResponse, type ModelStreamHandlers, normalizeUsage, providerOf, type RawUsage } from "@mountains/providers";
 import { readRecording } from "@mountains/telemetry";
 
@@ -11,6 +11,9 @@ export interface RecordedResponse {
 	httpStatus: number | null;
 	error: { message: string; retryable: boolean } | null;
 	aborted: boolean;
+	/** Recorded billing evidence goes back through the same verification, so a replay prices like the recording. */
+	billingReceipt?: ModelBillingReceipt;
+	billingReceiptRejected?: true;
 }
 
 /**
@@ -68,6 +71,8 @@ export class ScriptedModelAdapter implements ModelAdapter {
 			error: r.error,
 			retryAfterMs: null,
 			aborted: r.aborted,
+			...(r.billingReceipt ? { billingReceipt: r.billingReceipt } : {}),
+			...(r.billingReceiptRejected === true ? { billingReceiptRejected: true as const } : {}),
 		};
 	}
 

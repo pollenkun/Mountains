@@ -19,6 +19,27 @@ function userGitFingerprint(dir: string): string {
 }
 
 describe("影子 Git 检查点", () => {
+	test("diff and line counts between two snapshots, limited to the given paths", (t) => {
+		const root = mkdtempSync(join(tmpdir(), "ckpt-diff-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const ws = join(root, "workspace");
+		mkdirSync(ws);
+		writeFileSync(join(ws, "a.txt"), "one\ntwo\n");
+		writeFileSync(join(ws, "b.txt"), "keep\n");
+		const ck = new ShadowCheckpoints(ws, join(root, "data"));
+		const before = ck.snapshot();
+		writeFileSync(join(ws, "a.txt"), "one\nthree\nfour\n");
+		writeFileSync(join(ws, "b.txt"), "changed\n");
+		writeFileSync(join(ws, "c d.txt"), "new\n");
+		const after = ck.snapshot();
+		assert.deepEqual(ck.lineCounts(before.tree, after.tree, ["a.txt", "c d.txt"]), [{ path: "a.txt", added: 2, removed: 1 }, { path: "c d.txt", added: 1, removed: 0 }]);
+		const patch = ck.diff(before.tree, after.tree, ["a.txt"]);
+		assert.match(patch, /^-two$/m);
+		assert.match(patch, /^\+four$/m);
+		assert.doesNotMatch(patch, /b\.txt/);
+		assert.equal(ck.diff(before.tree, after.tree, []), "");
+	});
+
 	test("空清单与非空清单切换，删除的旧文件不会留在新快照中", (t) => {
 		const root = mkdtempSync(join(tmpdir(), "ckpt-transitions-"));
 		t.after(() => rmSync(root, { recursive: true, force: true }));

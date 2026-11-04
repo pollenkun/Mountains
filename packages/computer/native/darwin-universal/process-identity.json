@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "sourceSha256": "b3cfac57dff29215f323bd0e397be9aa83de578097d6a4d64439ba83f1a5a63f",
+  "binarySha256": "2980d0ef2bb129fe4274e8e72a4e1c64c0c623461c6de1f2e3e7332cc6d2ad0c",
+  "architectures": [
+    "arm64",
+    "x64"
+  ],
+  "minimumMacOS": "13.0"
+}

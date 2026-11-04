@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Drag fixture</title>
+<style>
+ body { font: 14px system-ui, sans-serif; margin: 16px; }
+ .row { display: flex; gap: 24px; margin-bottom: 20px; align-items: flex-start; }
+ .column { width: 180px; min-height: 120px; border: 2px dashed #888; padding: 8px; }
+ .card { width: 140px; padding: 8px; background: #dde; border: 1px solid #99a; cursor: grab; }
+ #track { position: relative; width: 300px; height: 24px; background: #eee; border-radius: 12px; touch-action: none; }
+ #thumb { position: absolute; top: 0; left: 0; width: 24px; height: 24px; border-radius: 12px; background: #36c; }
+ #zone { width: 260px; height: 80px; border: 2px dashed #3a3; display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+<!-- Three kinds of drag a page can use: HTML drag and drop, pointer events, and files dropped from the desktop. -->
+<div class="row">
+ <div class="column" id="todo" aria-label="To do column" role="region"><div class="card" id="card" draggable="true" role="button" aria-label="Card A">Card A</div></div>
+ <div class="column" id="done" aria-label="Done column" role="button">Done</div>
+</div>
+<div class="row">
+ <div id="track"><div id="thumb" role="slider" aria-label="Brightness" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"></div></div>
+ <label>Volume <input id="volume" type="range" min="0" max="100" value="10"></label>
+</div>
+<div class="row"><div id="zone" role="button" aria-label="Drop files here">Drop files here</div></div>
+<p id="status" role="status" aria-live="polite">Nothing moved yet</p>
+<script>
+const status = document.getElementById("status"), say = text => { status.textContent = text; };
+const card = document.getElementById("card"), done = document.getElementById("done");
+card.addEventListener("dragstart", event => { event.dataTransfer.setData("text/plain", "card-a"); event.dataTransfer.effectAllowed = "move"; });
+done.addEventListener("dragover", event => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; });
+done.addEventListener("drop", event => { event.preventDefault(); if (event.dataTransfer.getData("text/plain") === "card-a") { done.appendChild(card); say("Card A moved to Done"); } });
+const track = document.getElementById("track"), thumb = document.getElementById("thumb");
+let dragging = false;
+const place = clientX => { const box = track.getBoundingClientRect(), x = Math.max(0, Math.min(box.width - 24, clientX - box.left - 12)), value = Math.round(x / (box.width - 24) * 100); thumb.style.left = x + "px"; thumb.setAttribute("aria-valuenow", String(value)); return value; };
+thumb.addEventListener("pointerdown", event => { dragging = true; thumb.setPointerCapture(event.pointerId); });
+thumb.addEventListener("pointermove", event => { if (dragging) place(event.clientX); });
+thumb.addEventListener("pointerup", event => { if (!dragging) return; dragging = false; say("Brightness set to " + place(event.clientX)); });
+document.getElementById("volume").addEventListener("change", event => say("Volume set to " + event.target.value));
+const zone = document.getElementById("zone");
+zone.addEventListener("dragover", event => event.preventDefault());
+zone.addEventListener("drop", async event => {
+ event.preventDefault();
+ const files = [...event.dataTransfer.files], texts = await Promise.all(files.map(file => file.text()));
+ say("Dropped: " + files.map((file, i) => file.name + " (" + file.size + " bytes, starts " + JSON.stringify(texts[i].slice(0, 12)) + ")").join(", "));
+});
+</script>
+</body>
+</html>

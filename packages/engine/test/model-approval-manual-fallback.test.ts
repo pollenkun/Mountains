@@ -30,12 +30,13 @@ function fixture(t: TestContext, options: {
 	humanAvailable?: boolean;
 	ask?: (request: ApprovalRequest, workspace: string) => Promise<"allow" | "deny">;
 	calls?: RecordedResponse["message"]["toolCalls"];
+	turns?: RecordedResponse["message"]["toolCalls"][];
 	extra?: Partial<EngineOptions>;
 } = {}) {
 	const base = mkdtempSync(join(tmpdir(), "mountains-manual-fallback-"));
 	t.after(() => rmSync(base, { recursive: true, force: true }));
 	const workspace = join(base, "workspace"); mkdirSync(workspace);
-	const main = new ScriptedModelAdapter([reply(options.calls ?? [write]), reply()]);
+	const main = new ScriptedModelAdapter([...(options.turns ?? [options.calls ?? [write]]).map(calls => reply(calls)), reply()]);
 	const events: EngineEvent[] = [];
 	let judgeRequests = 0, humanRequests = 0;
 	const humanErrors: unknown[] = [];
@@ -209,4 +210,17 @@ test("file tools that omit approval cannot use a human fallback as an implicit a
 	assert.equal((await f.agent.run("Create new.txt.")).status, "completed");
 	assert.deepEqual(f.counts(), { judgeRequests: 1, humanRequests: 0 });
 	assert.equal(existsSync(join(f.workspace, "new.txt")), false);
+});
+
+test("the same action the user approved is not asked again, unless its risk is high", async (t) => {
+	const twice = [[write], [{ ...write, id: "again" }]];
+	for (const [risk, asked] of [["medium", 1], ["high", 2]] as const) {
+		const f = fixture(t, { turns: twice, decide: () => judgeReply({ decision: "ask", risk, reason: "要你决定。" }), extra: { lenientApproval: true } });
+		const shown: string[] = [];
+		const seen = f.events;
+		assert.equal((await f.agent.run("写 new.txt")).status, "completed");
+		for (const e of seen) if (e.type === "approval.requested" && e.source === "human") shown.push(e.explanation);
+		assert.equal(f.counts().judgeRequests, asked);
+		assert.equal(shown[0], "要你决定。");
+	}
 });

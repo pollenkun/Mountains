@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_CONFIG, loadConfig } from "../src/config.ts";
+import { DEFAULT_CONFIG, engineThinking, loadConfig } from "../src/config.ts";
 
 test("defaults: high thinking, built-in prompt, whole-file reads, batch edits and edit feedback", () => {
 	const { config, systemPrompt } = loadConfig(null);
@@ -85,4 +85,36 @@ test("skills: on by default with no extra directories; bad settings are rejected
 	assert.throws(() => loadConfig(null, { skills: { dirs: [""] } as never }), /skills\.dirs/);
 	assert.throws(() => loadConfig(null, { skills: { enabled: "yes" } as never }), /skills\.enabled/);
 	assert.throws(() => loadConfig(null, { skills: { extra: true } as never }), /未知配置项：skills\.extra/);
+	assert.deepEqual(loadConfig(null).config.computerUse, { apps: {}, screenshots: true });
+	assert.equal(loadConfig(null, { computerUse: { screenshots: false } } as never).config.computerUse.screenshots, false);
+	assert.throws(() => loadConfig(null, { computerUse: { screenshots: "no" } } as never), /computerUse\.screenshots/);
+	// The cursor's colour, normally the theme colour; anything but #RRGGBB is refused.
+	assert.equal(loadConfig(null, { computerUse: { cursorColor: "#4C5FF0" } } as never).config.computerUse.cursorColor, "#4C5FF0");
+	for (const cursorColor of ["4C5FF0", "#4C5FF", "blue", 7]) assert.throws(() => loadConfig(null, { computerUse: { cursorColor } } as never), /computerUse\.cursorColor/);
+});
+
+test("grounding output budgets and deadlines survive config loading and reject unsafe values", () => {
+	const base = { baseUrl: "http://127.0.0.1:8080/v1", model: "local-fixture" };
+	const grounding = { ...base, maxTokens: 256, timeoutMs: 120_000 };
+	assert.deepEqual(loadConfig(null, { computerUse: { grounding } } as never).config.computerUse.grounding, grounding);
+	for (const [key, maximum] of [["maxTokens", 4096], ["timeoutMs", 120_000]] as const) {
+		for (const value of [1, maximum]) assert.equal(loadConfig(null, { computerUse: { grounding: { ...base, [key]: value } } } as never).config.computerUse.grounding?.[key], value);
+		for (const value of ["256", null, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, maximum + 1]) {
+			assert.throws(() => loadConfig(null, { computerUse: { grounding: { ...base, [key]: value } } } as never), new RegExp(`computerUse\\.grounding\\.${key}`));
+		}
+	}
+});
+
+test("UltraCode: the top tier sends the model's highest effort and needs thinking on", () => {
+	const { config } = loadConfig(null, { thinking: { enabled: true, effort: "ultracode" } });
+	assert.deepEqual(engineThinking(config), { enabled: true, effort: "max" });
+	assert.deepEqual(engineThinking(loadConfig(null).config), { enabled: true, effort: "high" });
+	assert.throws(() => loadConfig(null, { thinking: { enabled: false, effort: "ultracode" } }), /UltraCode 需要开启思考/);
+});
+
+
+test("computer-use browser visibility, profile and downloads are explicit config",()=>{
+ const web={headless:false,profileDir:"/tmp/own-mountains-profile",downloadDir:"/tmp/own-downloads"};
+ assert.deepEqual(loadConfig(null,{computerUse:{web}} as never).config.computerUse.web,web);
+ for(const web of [{headless:"no"},{profileDir:1},{downloadDir:""},{unknown:true}])assert.throws(()=>loadConfig(null,{computerUse:{web}} as never),/computerUse.web/);
 });

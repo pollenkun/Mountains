@@ -1,7 +1,7 @@
 /**
  * 供应商与模型能力表（Mountains 自己维护，不使用 Pi 的模型目录数值）。
  */
-export type ProviderId = "deepseek" | "zhipu" | "moonshot" | "openai" | "gemini" | "qwen" | "siliconflow" | "openrouter";
+export type ProviderId = "deepseek" | "zhipu" | "moonshot" | "openai" | "gemini" | "qwen" | "siliconflow" | "openrouter" | "xai" | "openai-compatible" | "anthropic";
 export type Currency = "USD" | "CNY";
 
 export interface ProviderInfo {
@@ -24,7 +24,17 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderInfo>> = {
 	qwen: { id: "qwen", displayName: "阿里云百炼（北京）", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", apiKeyEnv: "QWEN_API_KEY", currency: "CNY" },
 	siliconflow: { id: "siliconflow", displayName: "硅基流动（中国）", baseUrl: "https://api.siliconflow.cn/v1", apiKeyEnv: "SILICONFLOW_API_KEY", currency: "CNY" },
 	openrouter: { id: "openrouter", displayName: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", currency: "USD" },
+	xai: { id: "xai", displayName: "xAI", baseUrl: "https://api.x.ai/v1", apiKeyEnv: "XAI_API_KEY", currency: "USD" },
+	"openai-compatible": { id: "openai-compatible", displayName: "OpenAI 兼容中转", baseUrl: "", apiKeyEnv: "OPENAI_COMPATIBLE_API_KEY", currency: "USD" },
+	anthropic: { id: "anthropic", displayName: "Anthropic", baseUrl: "https://api.anthropic.com", apiKeyEnv: "ANTHROPIC_API_KEY", currency: "USD" },
 };
+
+/** 通用 OpenAI 兼容中转。基址由调用方给出，后面接 /chat/completions。 */
+export function openAiCompatibleRelay(baseUrl: string): ProviderInfo {
+	const trimmed = baseUrl.trim().replace(/\/$/, "");
+	if (!/^https?:\/\//.test(trimmed)) throw new Error("OpenAI 兼容中转需要 http 或 https 基址");
+	return { ...PROVIDERS["openai-compatible"], baseUrl: trimmed };
+}
 
 export type Effort = "low" | "high" | "max";
 
@@ -178,5 +188,7 @@ export function providerOf(model: string): ProviderId | undefined {
 	if (m.startsWith("deepseek")) return "deepseek";
 	if (m.startsWith("glm")) return "zhipu";
 	if (m.startsWith("kimi") || m.startsWith("moonshot")) return "moonshot";
+	if (m.startsWith("grok")) return "xai";
+	if (m.startsWith("claude")) return "anthropic";
 	return undefined;
 }

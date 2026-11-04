@@ -5,3 +5,6 @@ export * from "./repository-brief.ts";
 export * from "./replay.ts";
 export * from "./approval-settings.ts";
 export * from "./model-approval.ts";
+export * from "./team.ts";
+export type { ToolExecutionObserver, ToolExecutionIdentity, ToolResponseSource, ToolExecutionOutcome, ToolExecutionInstant, ToolObservationValue } from "./tool-observer.ts";
+export type { ModelLedgerWitness } from "@mountains/telemetry";

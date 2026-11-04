@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { type ApprovalPolicy, type ApprovalSettings, BENCH_APPROVAL, DEFAULT_LIMITS, DEFAULT_RETRY, type RetryPolicy, type RunLimits, validateApprovalSettings } from "@mountains/engine";
-import { currencyOf, type Currency, type EffortSetting, pricingFor, PROVIDERS, providerOf, thinkingSettingError } from "@mountains/providers";
+import { capabilitiesFor, currencyOf, type Currency, type EffortSetting, pricingFor, PROVIDERS, providerOf, thinkingSettingError } from "@mountains/providers";
 
 /**
  * 运行配置（JSON 文件）。配置全文与哈希写入每次运行的 summary，
@@ -16,8 +16,11 @@ export interface MountainsConfig {
 	baseUrl: string;
 	/** 读取 Key 的环境变量名；Key 本身永远不出现在配置里。空字符串：按供应商取默认名 */
 	apiKeyEnv: string;
-	/** effort 为 "default" 时不发 reasoning_effort（服务端默认）；各模型允许的取值见能力表 */
-	thinking: { enabled: boolean; effort: EffortSetting };
+	/**
+	 * effort 为 "default" 时不发 reasoning_effort（服务端默认）；各模型允许的取值见能力表。
+	 * "ultracode" 是最高一档：用模型最高的思考强度，并开启多 Agent 协作（见 engineThinking）。
+	 */
+	thinking: { enabled: boolean; effort: EffortSetting | "ultracode" };
 	maxTokens: number;
 	limits: RunLimits;
 	retry: RetryPolicy;
@@ -32,11 +35,13 @@ export interface MountainsConfig {
 	approval: ApprovalPolicy;
 	/** Optional independent approval model. Null preserves the existing static approval policy. */
 	modelApproval: ApprovalSettings | null;
-	/** Request budget protection; model approval always enables it. */
+	/** Request budget protection: reserve the worst case before each paid request and settle it after. On by default; model approval always enables it. */
 	requestGuard: boolean;
 	/** Mountains 自己的累计花费台账（全局上限由 MOUNTAINS_BUDGET 决定，按模型的计价币种） */
 	spendLedger: string;
 	checkpoints: boolean;
+	/** Memory: the model may search earlier conversations (memory_search). Absent or false adds nothing, and leaves the default config hash as it was. */
+	memory?: boolean;
 	/** 读取上限、批量编辑、编辑后回显改动附近的源码 */
 	tools: { read: { defaultLines: number; maxLines: number; maxLineChars: number; lineNumbers: "all" | "sparse" }; batchEdit: boolean; editFeedback: boolean };
 	/**
@@ -44,6 +49,13 @@ export interface MountainsConfig {
 	 * enable 打开带工具的内置技能；permissions 按名字（可用 *）设 allow / ask / deny，项目里的技能默认 ask。
 	 */
 	skills: { enabled: boolean; dirs: string[]; enable: string[]; permissions: Record<string, "allow" | "ask" | "deny"> };
+	/**
+	 * 内置技能 computer-use（要在 skills.enable 里打开）：按应用名（可用 *）预先授权 read / act / deny，未列出的应用逐个询问。
+	 * screenshots 为 false 时从不把窗口截图发给模型，能看图的模型也只用无障碍树。
+	 */
+	computerUse: { apps: Record<string, "read" | "act" | "deny">; screenshots: boolean; cursorColor?: string; web?: { headless?: boolean; profileDir?: string; downloadDir?: string };
+		/** A grounding model for finding controls in window images (UI-TARS on a local server, for example). */
+		grounding?: { baseUrl: string; model: string; apiKeyEnv?: string; coordinates?: "image" | "thousandths"; maxTokens?: number; timeoutMs?: number } };
 }
 
 export const DEFAULT_CONFIG: MountainsConfig = {
@@ -59,14 +71,15 @@ export const DEFAULT_CONFIG: MountainsConfig = {
 	systemPrompt: { builtin: "default" },
 	approval: BENCH_APPROVAL,
 	modelApproval: null,
-	requestGuard: false,
+	requestGuard: true,
 	spendLedger: "~/.mountains/spend.jsonl",
 	checkpoints: true,
 	tools: { read: { defaultLines: 2000, maxLines: 2000, maxLineChars: 2000, lineNumbers: "all" }, batchEdit: true, editFeedback: true },
 	skills: { enabled: true, dirs: [], enable: [], permissions: {} },
+	computerUse: { apps: {}, screenshots: true },
 };
 
-const KNOWN_KEYS = new Set([...Object.keys(DEFAULT_CONFIG), "billingCurrency", "contextWindow", "userIdFixed"]);
+const KNOWN_KEYS = new Set([...Object.keys(DEFAULT_CONFIG), "billingCurrency", "contextWindow", "userIdFixed", "memory"]);
 
 export interface LoadedConfig {
 	config: MountainsConfig;
@@ -117,6 +130,7 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 			throw new Error("billingCurrency=CNY 必须显式提供有限正数 limits.maxCost（人民币金额），不能沿用默认美元预算");
 		}
 	}
+	validateNested(config);
 	const skills = config.skills as unknown as Record<string, unknown>;
 	const unknownSkillKey = Object.keys(skills).find(key => !["enabled", "dirs", "enable", "permissions"].includes(key));
 	if (unknownSkillKey) throw new Error(`未知配置项：skills.${unknownSkillKey}`);
@@ -125,7 +139,33 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 	}
 	if (!skills.permissions || typeof skills.permissions !== "object" || Array.isArray(skills.permissions) ||
 		Object.values(skills.permissions).some(v => v !== "allow" && v !== "ask" && v !== "deny")) throw new Error("skills.permissions 的值只能是 allow、ask 或 deny");
-	for (const [name, value] of Object.entries({ requestGuard: config.requestGuard, batchEdit: config.tools.batchEdit, editFeedback: config.tools.editFeedback, "skills.enabled": skills.enabled })) {
+	const cu = config.computerUse as unknown as Record<string, unknown>;
+	const unknownComputerKey = Object.keys(cu).find(key => key !== "apps" && key !== "screenshots" && key !== "web" && key !== "grounding" && key !== "cursorColor");
+	if (unknownComputerKey) throw new Error(`未知配置项：computerUse.${unknownComputerKey}`);
+	if (cu.cursorColor !== undefined && (typeof cu.cursorColor !== "string" || !/^#[0-9a-fA-F]{6}$/.test(cu.cursorColor))) throw new Error("computerUse.cursorColor 必须是 #RRGGBB 格式的颜色");
+    if(cu.web!==undefined){
+        if(!cu.web||typeof cu.web!=="object"||Array.isArray(cu.web))throw new Error("computerUse.web 必须是对象");
+        const web=cu.web as Record<string,unknown>;
+        for(const [key,value] of Object.entries(web)){
+            if(!["headless","profileDir","downloadDir"].includes(key))throw new Error(`未知配置项：computerUse.web.${key}`);
+            if(key==="headless"?typeof value!=="boolean":typeof value!=="string"||!value)throw new Error(`computerUse.web.${key} 格式错误`);
+        }
+    }
+	if (cu.grounding !== undefined) {
+		const g = cu.grounding as Record<string, unknown>;
+		if (!g || typeof g !== "object" || Array.isArray(g)) throw new Error("computerUse.grounding 必须是对象");
+		for (const key of Object.keys(g)) if (!["baseUrl", "model", "apiKeyEnv", "coordinates", "maxTokens", "timeoutMs"].includes(key)) throw new Error(`未知配置项：computerUse.grounding.${key}`);
+		if (typeof g.baseUrl !== "string" || !/^https?:\/\//.test(g.baseUrl)) throw new Error("computerUse.grounding.baseUrl 必须是 http(s) 地址");
+		if (typeof g.model !== "string" || !g.model) throw new Error("computerUse.grounding.model 必须是非空字符串");
+		if (g.apiKeyEnv !== undefined && (typeof g.apiKeyEnv !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(g.apiKeyEnv))) throw new Error("computerUse.grounding.apiKeyEnv 必须是环境变量名");
+		if (g.coordinates !== undefined && g.coordinates !== "image" && g.coordinates !== "thousandths") throw new Error("computerUse.grounding.coordinates 只能是 image 或 thousandths");
+		for (const [key, limit] of [["maxTokens", 4096], ["timeoutMs", 120_000]] as const) {
+			const value = g[key];
+			if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > limit)) throw new Error(`computerUse.grounding.${key} 必须是 1 到 ${limit} 的整数`);
+		}
+	}
+	if (!cu.apps || typeof cu.apps !== "object" || Array.isArray(cu.apps) || Object.values(cu.apps).some(v => v !== "read" && v !== "act" && v !== "deny")) throw new Error("computerUse.apps 的值只能是 read、act 或 deny");
+	for (const [name, value] of Object.entries({ requestGuard: config.requestGuard, batchEdit: config.tools.batchEdit, editFeedback: config.tools.editFeedback, "skills.enabled": skills.enabled, "computerUse.screenshots": cu.screenshots })) {
 		if (typeof value !== "boolean") throw new Error(`配置 ${name} 必须为布尔值`);
 	}
 	if (config.contextWindow !== undefined && (!Number.isSafeInteger(config.contextWindow) || config.contextWindow < 32_768)) throw new Error("contextWindow 必须是不小于 32768 的整数");
@@ -144,7 +184,8 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 		if (!provider) throw new Error(`无法由模型 ${config.model} 推断供应商：请在配置中给出 baseUrl 与 apiKeyEnv`);
 		config = { ...config, baseUrl: config.baseUrl || PROVIDERS[provider].baseUrl, apiKeyEnv: config.apiKeyEnv || PROVIDERS[provider].apiKeyEnv };
 	}
-	const thinkingError = thinkingSettingError(config.model, config.thinking);
+	if (config.thinking.effort === "ultracode" && !config.thinking.enabled) throw new Error("思考设置无效：UltraCode 需要开启思考");
+	const thinkingError = thinkingSettingError(config.model, engineThinking(config));
 	if (thinkingError) throw new Error(`思考设置无效：${thinkingError}`);
 	if (config.modelApproval !== null) {
 		const settings = validateApprovalSettings(config.modelApproval, currencyOf(config.model, config.billingCurrency) ?? "USD");
@@ -169,6 +210,49 @@ export function loadConfig(path: string | null, overrides: Partial<MountainsConf
 	};
 }
 
+const RISKS: readonly unknown[] = ["read-only", "workspace-write", "network", "dangerous"];
+
+function objectAt(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`配置 ${path} 必须是对象`);
+	const extra = Object.keys(value).find(key => !keys.includes(key));
+	if (extra) throw new Error(`未知配置项：${path}.${extra}`);
+	return value as Record<string, unknown>;
+}
+
+/** Nested sections are checked as strictly as the top level: a misspelt key or a wrong type stops the run before any request. */
+function validateNested(config: MountainsConfig): void {
+	objectAt(config.limits, "limits", ["maxTurns", "maxInputTokens", "maxOutputTokens", "maxCost", "maxRequests", "maxDurationMs"]);
+	objectAt(config.retry, "retry", ["maxAttempts", "baseDelayMs", "maxDelayMs"]);
+	const thinking = objectAt(config.thinking, "thinking", ["enabled", "effort"]);
+	const tools = objectAt(config.tools, "tools", ["read", "batchEdit", "editFeedback"]);
+	const read = objectAt(tools.read, "tools.read", ["defaultLines", "maxLines", "maxLineChars", "lineNumbers"]);
+	for (const key of ["defaultLines", "maxLines", "maxLineChars"]) {
+		if (!Number.isSafeInteger(read[key]) || (read[key] as number) <= 0) throw new Error(`tools.read.${key} 必须为有效的正整数`);
+	}
+	if (read.lineNumbers !== "all" && read.lineNumbers !== "sparse") throw new Error("tools.read.lineNumbers 只能是 all 或 sparse");
+	const approval = objectAt(config.approval, "approval", ["rules", "fallback"]);
+	if (!Array.isArray(approval.rules)) throw new Error("approval.rules 必须是数组");
+	// A rule without risks or pattern matches every operation, so a misspelt key would quietly widen it.
+	approval.rules.forEach((value: unknown, i: number) => {
+		const at = `approval.rules[${i}]`;
+		const rule = objectAt(value, at, ["id", "decision", "risks", "pattern"]);
+		if (typeof rule.id !== "string" || !rule.id) throw new Error(`${at}.id 必须是非空字符串`);
+		if (rule.decision !== "allow" && rule.decision !== "deny") throw new Error(`${at}.decision 只能是 allow 或 deny`);
+		if (rule.risks !== undefined && (!Array.isArray(rule.risks) || !rule.risks.length || rule.risks.some(r => !RISKS.includes(r)))) throw new Error(`${at}.risks 必须是非空数组，取值为 ${RISKS.join("、")}`);
+		if (rule.pattern !== undefined) {
+			if (typeof rule.pattern !== "string" || !rule.pattern) throw new Error(`${at}.pattern 必须是非空字符串`);
+			try { new RegExp(rule.pattern); } catch { throw new Error(`${at}.pattern 不是有效的正则表达式`); }
+		}
+	});
+	if (approval.fallback !== "deny" && approval.fallback !== "ask") throw new Error("approval.fallback 只能是 deny 或 ask");
+	objectAt(config.systemPrompt, "systemPrompt", ["builtin", "file"]);
+	for (const [name, value] of Object.entries({ checkpoints: config.checkpoints, ...(config.memory !== undefined ? { memory: config.memory } : {}), verbatimToolArguments: config.verbatimToolArguments, "thinking.enabled": thinking.enabled })) {
+		if (typeof value !== "boolean") throw new Error(`配置 ${name} 必须为布尔值`);
+	}
+	if (!["none", "per-run", "fixed"].includes(config.userIdMode)) throw new Error("userIdMode 只能是 none、per-run 或 fixed");
+	if (typeof config.spendLedger !== "string" || !config.spendLedger) throw new Error("spendLedger 必须是非空字符串");
+}
+
 function flattenKeys(v: unknown, acc: Record<string, true> = {}): Record<string, true> {
 	if (v && typeof v === "object") {
 		for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
@@ -177,4 +261,10 @@ function flattenKeys(v: unknown, acc: Record<string, true> = {}): Record<string,
 		}
 	}
 	return acc;
+}
+
+/** The thinking setting sent to the model: UltraCode uses the model's highest effort. */
+export function engineThinking(config: MountainsConfig): { enabled: boolean; effort: EffortSetting } {
+	if (config.thinking.effort !== "ultracode") return { enabled: config.thinking.enabled, effort: config.thinking.effort };
+	return { enabled: true, effort: capabilitiesFor(config.model)?.effortLevels.at(-1) ?? "default" };
 }

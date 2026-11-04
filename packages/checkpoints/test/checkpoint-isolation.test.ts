@@ -132,20 +132,22 @@ test("restore staging is private before any preimage bytes are written", { skip:
 	const { workspace, checkpoint } = fixture(t);
 	const path = join(workspace, "private.txt"); writeFileSync(path, "private preimage\n"); chmodSync(path, 0o600);
 	const tree = checkpoint.snapshot().tree; writeFileSync(path, "agent\n");
-	const original = fs.writeFileSync;
+	// The preimage is streamed from Git into the staging file: check it is private as soon as it exists, before any byte arrives.
+	const original = fs.openSync;
 	const mask = process.umask(0o022);
 	let observed = false;
-	fs.writeFileSync = ((file: Parameters<typeof original>[0], ...args: unknown[]) => {
-		const result = (original as (...args: unknown[]) => void)(file, ...args);
+	fs.openSync = ((file: Parameters<typeof original>[0], ...args: unknown[]) => {
+		const result = (original as (...args: unknown[]) => number)(file, ...args);
 		if (String(file).includes(".mountains-restore-")) {
 			observed = true;
+			assert.equal(statSync(String(file)).size, 0, "checked before any preimage bytes are written");
 			assert.equal(statSync(String(file)).mode & 0o077, 0, "temporary preimage bytes must never be readable by other users");
 		}
 		return result;
 	}) as typeof original;
 	syncBuiltinESMExports();
 	try { checkpoint.restore(tree, ["private.txt"]); }
-	finally { fs.writeFileSync = original; syncBuiltinESMExports(); process.umask(mask); }
+	finally { fs.openSync = original; syncBuiltinESMExports(); process.umask(mask); }
 	assert.equal(observed, true);
 	assert.equal(statSync(path).mode & 0o777, 0o600);
 	assert.equal(readFileSync(path, "utf8"), "private preimage\n");

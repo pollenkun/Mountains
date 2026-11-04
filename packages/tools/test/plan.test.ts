@@ -155,5 +155,28 @@ describe("bounded query plan", () => {
 			assert.equal(result.ok, false); assert.match(result.modelContent, /Source changed during plan/); assert.doesNotMatch(result.modelContent, /OLD/);
 		} finally { if (previous === undefined) delete process.env.MOUNTAINS_RG; else process.env.MOUNTAINS_RG = previous; }
 	});
+
+	test("allowOutside workspace lets query_plan glob, search and read an explicit outside directory", async () => {
+		const { parent, root, controller } = setup();
+		const outside = join(parent, "elsewhere");
+		mkdirSync(outside);
+		writeFileSync(join(outside, "outside.ts"), "export const outsideToken = 99;\n");
+		const ctx: ToolContext = {
+			workspace: new Workspace(root, { allowOutside: true }),
+			files: new FileStateTracker(),
+			signal: controller.signal,
+			toolCallId: "plan-outside",
+			approve: async () => "allow",
+		};
+		const result = await executeQueryPlan({
+			steps: [
+				{ id: "files", op: "glob", path: outside, patterns: ["*.ts"] },
+				{ id: "hits", op: "search", path: outside, pattern: "outsideToken" },
+				{ id: "body", op: "read", path: { from: "hits", expect: "one" } },
+			],
+		}, ctx);
+		assert.equal(result.ok, true, result.modelContent);
+		assert.match(result.modelContent, /outsideToken = 99/);
+	});
 });
 

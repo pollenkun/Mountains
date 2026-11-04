@@ -5,7 +5,13 @@
  */
 const SENSITIVE_KEY = /^(authorization|proxy-authorization|x-api-key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|password|passwd|secret|client[-_]?secret|cookie|set-cookie)$/i;
 const SENSITIVE_ENV = /(API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
-const PATTERNS: RegExp[] = [/sk-[A-Za-z0-9]{16,}/g, /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/g, /ghp_[A-Za-z0-9]{20,}/g, /AKIA[0-9A-Z]{16}/g];
+// Best effort only: known shapes of sk- keys with any dashed prefix and tail (OpenAI sk-proj-/sk-svcacct-,
+// OpenRouter sk-or-v1-, Anthropic sk-ant-), Stripe sk_live_/rk_test_, and GitHub (classic gh*_ and
+// fine-grained github_pat_) keys. Values from the environment are removed exactly above.
+const PATTERNS: RegExp[] = [
+	/(?<![A-Za-z0-9])sk-[A-Za-z0-9][A-Za-z0-9_-]{15,}/g, /(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/g, /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/g,
+	/gh[pousr]_[A-Za-z0-9]{20,}/g, /github_pat_[A-Za-z0-9_]{20,}/g, /AKIA[0-9A-Z]{16}/g,
+];
 
 export function knownSecrets(env: NodeJS.ProcessEnv = process.env): string[] {
 	return Object.entries(env)

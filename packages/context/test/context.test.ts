@@ -231,3 +231,68 @@ describe("无损折叠与压缩", () => {
 		assert.equal(b.compactionTailStart(10), null);
 	});
 });
+
+describe("工具结果里的图片", () => {
+	const tools: ToolSpec[] = ["screen_look", "context_expand"].map(name => ({ name, description: name, parameters: { type: "object" } }));
+	const image = { mimeType: "image/png" as const, data: "A".repeat(400_000), width: 1280, height: 800 };
+	function fixture() {
+		return new ContextBuilder({ system: "sys", tools, expandTool: "context_expand", publicationGuard: {
+			verifyReference: () => true,
+			archiveInteraction: (content) => { const h = createHash("sha256").update(content).digest("hex"); return `blob_v2_${h}_${"0".repeat(32)}_raw_${h}`; },
+		} });
+	}
+	function look(b: ContextBuilder, id: string) {
+		b.appendAssistant({ role: "assistant", content: "", reasoning: "r", toolCalls: [{ id, name: "screen_look", argumentsJson: '{"app":"Notes"}' }] });
+		b.appendToolResult(id, "screen_look", "[Image of Notes]", { kind: "tool_output", ref: `shown_${id}`, target: "Notes" }, [image]);
+	}
+
+	test("图片按面积计 token，不按 base64 长度", () => {
+		const b = fixture();
+		b.appendUser("看一下");
+		const before = b.plan().totalTokensEst;
+		look(b, "c1");
+		const added = b.plan().totalTokensEst - before;
+		assert.ok(added > 1300 && added < 1500, `一张 1280×800 约 1366 token，实际 ${added}`);
+		const last = b.plan().messages.at(-1)!;
+		assert.equal(last.role === "tool" ? last.images?.length : 0, 1);
+	});
+
+	test("旧截图被同样的新截图取代后折叠，折叠后不再带图片；快照能带着图片恢复", () => {
+		const b = fixture();
+		b.appendUser("看一下");
+		look(b, "c1");
+		look(b, "c2");
+		b.appendAssistant({ role: "assistant", content: "看到了", reasoning: "r", toolCalls: [] });
+		const r = new CachePlanner({ triggerTokens: 1, hardLimitTokens: 1_000_000, compactTokens: 900_000, compactTailTokens: 100, minBatchTokens: 0 }).beforeRequest(b, 0);
+		assert.equal(r?.reason, "lossless");
+		const images = b.plan().messages.filter(m => m.role === "tool" && m.images?.length);
+		assert.equal(images.length, 1, "只剩最新的那张");
+		const restored = new ContextBuilder({ system: "sys", tools, expandTool: "context_expand" });
+		restored.restoreState(JSON.parse(JSON.stringify(b.exportState())));
+		assert.deepEqual(restored.plan().messages, b.plan().messages);
+		const bad = JSON.parse(JSON.stringify(b.exportState()));
+		const item = bad.history.find((h: { message: { images?: unknown[] } }) => h.message.images);
+		item.message.images[0].mimeType = "image/gif";
+		assert.throws(() => new ContextBuilder({ system: "sys", tools, expandTool: "context_expand" }).restoreState(bad), /图片格式/);
+	});
+});
+
+describe("Screenshots in requests", () => {
+	test("only the latest images are sent; older ones leave in batches, so the prefix changes rarely", () => {
+		const b = new ContextBuilder({ system: "sys", tools: [{ name: "screen_look", description: "look", parameters: { type: "object" } }] });
+		const shown = () => b.plan().messages.flatMap((m, i) => m.role === "tool" && m.images?.length ? [i] : []);
+		const plans: ContextPlan[] = [];
+		for (let i = 0; i < 15; i++) {
+			b.appendAssistant({ role: "assistant", content: "", reasoning: "", toolCalls: [{ id: `l${i}`, name: "screen_look", argumentsJson: "{}" }] });
+			b.appendToolResult(`l${i}`, "screen_look", `[Image img:${i}]`, { kind: "tool_output", ref: `blob_${i}`, target: "Notes" }, [{ mimeType: "image/png", data: "AAAA", width: 1280, height: 800 }]);
+			plans.push(b.plan());
+		}
+		// 15 images: 12 have left (two batches of 6), the latest 3 remain.
+		assert.equal(shown().length, 3);
+		const stale = b.plan().messages[1]!;
+		assert.ok(stale.role === "tool" && !stale.images && stale.content.endsWith("[This earlier image is no longer shown.]"));
+		// The prefix is broken only when a batch leaves: at the 9th and the 15th image.
+		const broken = plans.slice(1).flatMap((p, i) => isPrefixExtension(plans[i]!, p) ? [] : [i + 2]);
+		assert.deepEqual(broken, [9, 15]);
+	});
+});

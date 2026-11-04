@@ -105,3 +105,28 @@ test("engine cancellation during file approval cannot execute the late-approved 
 	assert.equal(f.events.some((event) => event.type === "tool.completed" && event.ok), false);
 	originals(f.workspace);
 });
+
+test("plan mode (refuseRisks) writes no file and runs no changing command, whatever the approval says", async (t) => {
+	const touch = { id: "touch", name: "command_run", args: { argv: ["touch", "made-by-command.txt"] } };
+	const base = mkdtempSync(join(tmpdir(), "mountains-plan-gate-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const workspace = join(base, "work"); mkdirSync(workspace);
+	for (const name of ["single.txt", "batch.txt", "overwrite.txt"]) writeFileSync(join(workspace, name), "alpha\nbeta\n");
+	const events: EngineEvent[] = [];
+	const agent = new AgentSession({
+		workspace, dataDir: join(base, "data"), adapter: new ScriptedModelAdapter([reply([...edits, touch]), reply()]), model: "deepseek-flash", thinking: { enabled: false, effort: "default" }, maxTokens: 128,
+		checkpoints: false, budget: new BudgetGuard({ globalLimit: 1, ledgerPath: join(base, "spend.jsonl") }),
+		retry: { maxAttempts: 1, baseDelayMs: 0 }, approval: { rules: [{ id: "allow-all", decision: "allow", risks: ["read-only", "workspace-write", "network", "dangerous"] }], fallback: "ask" },
+		onEvent: (event) => events.push(event), toolOptions: { batchEdit: true },
+	});
+	agent.refuseRisks = new Set(["workspace-write", "dangerous"]);
+	const summary = await agent.run("Apply the scripted changes.");
+	assert.equal(summary.status, "completed", summary.reason);
+	originals(workspace);
+	assert.equal(existsSync(join(workspace, "made-by-command.txt")), false);
+	const results = events.filter((event) => event.type === "tool.completed");
+	assert.equal(results.length, 5);
+	assert.ok(results.every((event) => event.type === "tool.completed" && !event.ok));
+	agent.refuseRisks = null;
+	assert.deepEqual(summary.filesChanged, []);
+});

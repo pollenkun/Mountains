@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,openSync,closeSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {join,resolve,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {spawnSync} from 'node:child_process';
+import {setTimeout as delay} from 'node:timers/promises';
+import {checkFrozenVersion} from './integrity.ts';
+import {readWriterProcess,writerProcessIdentity,writerState} from './process-identity.ts';
+const root=resolve(process.argv[2]||''),repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../../..');
+const runner=process.argv[3];assert.ok(process.argv[2]&&['self','deepseek'].includes(runner),'usage: checks.mjs root self|deepseek');const freeze=JSON.parse(readFileSync(join(root,'evidence/freeze.json'),'utf8'));
+const digest=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
+const frozen=checkFrozenVersion(join(root,'evidence/freeze.json'),undefined,{repo,root});
+const verify=()=>checkFrozenVersion(join(root,'evidence/freeze.json'),frozen.sha256,{repo,root});
+verify();
+// Real Chrome smoke is part of npm run check: require the already-running independent monitor.
+const readFocus=()=>readFileSync(join(root,'evidence/focus.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+const journal=readFileSync(join(root,'evidence',runner==='self'?'operator.jsonl':'controller.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+const startMonitor=journal.find(item=>item.monitorStart)?.monitorStart,monitorPid=startMonitor?.pid;assert.ok(Number.isSafeInteger(monitorPid)&&monitorPid>0,'missing exact monitor PID');
+assert.equal(startMonitor.process?.status,'alive','missing controller monitor birth');const expectedIdentity=writerProcessIdentity(startMonitor.process.identity);assert.equal(expectedIdentity.pid,monitorPid);
+const manifest=JSON.parse(readFileSync(join(root,'manifest.json'),'utf8')),probePath=join(root,'build/ReadProcessIdentity'),probe={path:probePath,sha256:manifest.fixtureHashes[probePath]};
+const identity=async()=>{const observation=await readWriterProcess(probe,monitorPid);assert.equal(writerState(expectedIdentity,observation),'alive','monitor process was replaced or is unknown');return observation.identity;};
+const monitorIdentity=await identity(),focus=readFocus();let monitorIdentityAfter=null;
+assert.ok(focus.some(item=>item.kind==='ready')&&Date.now()-focus.at(-1).at<1000,'start an independent monitor before these checks');
+const log=join(root,'evidence/npm-check.log'),output=openSync(log,'wx',0o600),started=Date.now();
+const run=spawnSync('npm',['run','check'],{cwd:repo,stdio:['ignore',output,output],timeout:180000});closeSync(output);
+const finished=Date.now();let monitored=false,monitorError=null;
+try{
+ monitorIdentityAfter=await identity();assert.deepEqual(monitorIdentityAfter,monitorIdentity,'monitor process was replaced');
+ for(const deadline=Date.now()+1000;readFocus().at(-1).at<finished&&Date.now()<deadline;)await delay(50);
+ const records=readFocus(),samples=records.filter(item=>item.kind==='sample');
+ assert.ok(records.find(item=>item.kind==='ready')?.at<=started&&samples.at(-1).at>=finished,'checks were not fully monitored');
+ const covered=samples.filter((item,i)=>item.at>=started&&item.at<=finished||samples[i+1]?.at>=started&&item.at<=started||samples[i-1]?.at<=finished&&item.at>=finished);
+ assert.ok(covered.length>1);for(let i=1;i<covered.length;i++)assert.ok(covered[i].uptimeMs-covered[i-1].uptimeMs<=freeze.policy.focusSampleGapMaxMs,'focus monitor sampling gap during checks');
+ monitored=true;
+}catch(error){monitorError=String(error);}
+verify();
+const text=readFileSync(log,'utf8'),count=name=>Number(text.match(new RegExp('ℹ '+name+' (\\d+)'))?.[1]);
+const receipt={command:'npm run check',cwd:repo,started,finished,monitored,monitorPid,monitorIdentity,monitorIdentityAfter,monitorError,exitCode:run.status,signal:run.signal,error:run.error?String(run.error):null,log,logSha256:digest(log),sourceHashes:freeze.files,tests:count('tests'),passed:count('pass'),failed:count('fail'),skipped:count('skipped')};
+writeFileSync(join(root,'evidence/automated-check.json'),JSON.stringify(receipt,null,2),{flag:'wx',mode:0o600});
+process.stdout.write(JSON.stringify({exitCode:receipt.exitCode,monitored,tests:receipt.tests,passed:receipt.passed,failed:receipt.failed,skipped:receipt.skipped})+'\n');if(run.status!==0||!monitored)process.exitCode=1;

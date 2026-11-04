@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { buildIncrementalReadText, DEFAULT_READ_LIMITS, findSymbol, splitLines, type ReadLimits } from "./files.ts";
 import { outlineLines } from "./outline.ts";
 import type { ToolContext, ToolDefinition, ToolResult, ReadRecord } from "./types.ts";
-import { FileStateTracker, sha256, ToolError } from "./workspace.ts";
+import { FileStateTracker, sha256, ToolError, type Workspace } from "./workspace.ts";
 
 /** Bump whenever query semantics, parsing or applicability checks change. */
 export const QUERY_PLAN_VERSION = "bounded-query-v1";
@@ -31,7 +31,7 @@ const HARD_LIMITS: PlanLimits = {
 export type PlanPath = string | { from: string; expect: "one" | "all" };
 export type QueryStep = { id: string } & (
 	{ op: "search"; pattern: string; glob?: string; path?: string; caseSensitive?: boolean } |
-	{ op: "glob"; patterns: string[]; exclude?: string[] } |
+	{ op: "glob"; patterns: string[]; exclude?: string[]; path?: string } |
 	{ op: "read"; path: PlanPath; startLine?: number; endLine?: number; symbol?: string; force?: boolean } |
 	{ op: "outline"; path: PlanPath } |
 	{ op: "json_field"; path: PlanPath; field: string[] }
@@ -113,8 +113,9 @@ export function validateQueryPlan(value: unknown, maxSteps = DEFAULT_PLAN_LIMITS
 			}
 			if (s.caseSensitive !== undefined && typeof s.caseSensitive !== "boolean") throw new ToolError("Invalid caseSensitive");
 		} else if (s.op === "glob") {
-			keys(s, ["id", "op", "patterns", "exclude"]); strings(s.patterns, "patterns");
+			keys(s, ["id", "op", "patterns", "exclude", ...(allowLiteralSearchPath ? ["path"] : [])]); strings(s.patterns, "patterns");
 			if (s.exclude !== undefined) strings(s.exclude, "exclude");
+			if (s.path !== undefined) text(s.path, "glob.path");
 		} else if (["read", "outline", "json_field"].includes(String(s.op))) {
 			keys(s, ["id", "op", "path", ...(s.op === "read" ? ["startLine", "endLine", "symbol", "force"] : s.op === "json_field" ? ["field"] : [])]);
 			if (typeof s.path === "string") text(s.path, "path");
@@ -134,6 +135,36 @@ export function validateQueryPlan(value: unknown, maxSteps = DEFAULT_PLAN_LIMITS
 	}
 	// A JSON clone prevents later caller mutation and rejects executable values.
 	return JSON.parse(JSON.stringify(plan)) as QueryPlan;
+}
+/** Extract a shared directory/file scope when allowOutside glob patterns start with ~, /, or ../ */
+function splitOutsideGlobScope(patterns: readonly string[], workspace: Workspace): { path: string; patterns: string[] } | null {
+	if (!workspace.allowOutside || !patterns.length) return null;
+	const startsExplicit = (p: string) => p === "~" || p.startsWith("~/") || p.startsWith("../") || isAbsolute(p)
+		|| (process.platform === "win32" && (p.startsWith("~\\") || p.startsWith("..\\")));
+	if (patterns.some((p) => !startsExplicit(p))) return null;
+	let shared: string | null = null;
+	const subPatterns: string[] = [];
+	for (const p of patterns) {
+		const meta = p.search(/[*?[{!]/);
+		if (meta < 0) {
+			const target = workspace.resolve(p);
+			const st = statSync(target.abs);
+			if (!st.isDirectory() && !(st.isFile() && patterns.length === 1)) return null;
+			if (shared !== null && shared !== target.rel) return null;
+			shared = target.rel;
+			subPatterns.push("**/*");
+			continue;
+		}
+		const cut = Math.max(p.lastIndexOf("/", meta), process.platform === "win32" ? p.lastIndexOf("\\", meta) : -1);
+		if (cut < 0) return null;
+		const dirPart = cut === 0 ? p.slice(0, 1) : p.slice(0, cut);
+		const target = workspace.resolve(dirPart);
+		if (!statSync(target.abs).isDirectory()) return null;
+		if (shared !== null && shared !== target.rel) return null;
+		shared = target.rel;
+		subPatterns.push(p.slice(cut + 1) || "**/*");
+	}
+	return shared === null ? null : { path: shared, patterns: subPatterns };
 }
 /** These aliases have exactly the same glob semantics; conflicting names are never guessed. */
 function normalizePlanAliases(value: unknown, ctx: ToolContext): unknown {
@@ -157,6 +188,16 @@ function normalizePlanAliases(value: unknown, ctx: ToolContext): unknown {
 		if (alias === "pattern" || alias === "glob") {
 			step.patterns = [text(step[alias], `glob.${alias}`)]; delete step[alias];
 		}
+		if (Object.hasOwn(step, "path")) {
+			const target = ctx.workspace.resolve(text(step.path, "glob.path"));
+			const stat = statSync(target.abs);
+			if (!stat.isFile() && !stat.isDirectory()) throw new ToolError("glob.path must be a regular file or directory");
+			step.path = target.rel;
+			if (!Object.hasOwn(step, "patterns")) step.patterns = ["**/*"];
+		} else if (ctx.workspace.allowOutside && Array.isArray(step.patterns)) {
+			const scoped = splitOutsideGlobScope(strings(step.patterns, "patterns"), ctx.workspace);
+			if (scoped) { step.path = scoped.path; step.patterns = scoped.patterns; }
+		}
 		return step;
 	}) };
 }
@@ -168,10 +209,10 @@ function check(state: RunState, ctx: ToolContext): void {
 	if (Date.now() >= state.deadline) throw new ToolError("Query time limit exceeded");
 }
 /** No shell, bounded stdout+stderr, and the deadline also covers hung children. */
-export function runQueryProcess(command: string, args: string[], ctx: ToolContext, deadline: number, maxBytes: number, input?: Buffer): Promise<{ code: number; stdout: string; bytes: number }> {
+export function runQueryProcess(command: string, args: string[], ctx: ToolContext, deadline: number, maxBytes: number, input?: Buffer, cwd = ctx.workspace.root): Promise<{ code: number; stdout: string; bytes: number }> {
 	return new Promise((resolve, reject) => {
 		if (ctx.signal.aborted || Date.now() >= deadline) { reject(new ToolError("Query cancelled or timed out")); return; }
-		const child = spawn(command, args, { cwd: ctx.workspace.root, stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true });
+		const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true });
 		const chunks: Buffer[] = []; let count = 0; let settled = false; let stderr = "";
 		const cleanup = () => { clearTimeout(timer); ctx.signal.removeEventListener("abort", abort); };
 		const stop = (error: Error) => {
@@ -225,11 +266,11 @@ export function runQueryProcess(command: string, args: string[], ctx: ToolContex
 	});
 }
 const rgCommand = () => process.env.MOUNTAINS_RG ?? "rg";
-async function runInState(args: string[], ctx: ToolContext, state: RunState, input?: Buffer) {
+async function runInState(args: string[], ctx: ToolContext, state: RunState, input?: Buffer, cwd?: string) {
 	check(state, ctx);
 	const remaining = state.limits.maxProcessBytes - state.processBytes;
 	if (remaining < 1) throw new ToolError("Cumulative process output limit exceeded");
-	const result = await runQueryProcess(rgCommand(), args, ctx, state.deadline, remaining, input);
+	const result = await runQueryProcess(rgCommand(), args, ctx, state.deadline, remaining, input, cwd);
 	state.processBytes += result.bytes;
 	return result;
 }
@@ -266,7 +307,8 @@ function boundedRead(path: string, ctx: ToolContext, state: RunState, skipBinary
 			throw new ToolError(`Binary file cannot be queried: ${r.rel}`);
 		}
 		let content: string;
-		try { content = new TextDecoder("utf-8", { fatal: true }).decode(data); }
+		// Keep a leading BOM like file_read does: both publish the same line receipts for the same bytes.
+		try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data); }
 		catch { if (skipBinary) return { path: r.rel, text: "", hash: sha256(data), binary: true }; throw new ToolError(`File is not UTF-8: ${r.rel}`); }
 		return { path: r.rel, text: content, hash: sha256(data) };
 	} finally { closeSync(fd); }
@@ -300,7 +342,7 @@ function inventoryTypeGlobs(patterns: string[], scope?: LiteralScope): string[] 
  * Keep argument growth bounded; unusual spellings retain the type-filter fallback.
  */
 function inventoryScopeExclusions(scope?: LiteralScope): string[] {
-	if (!scope || scope.path === "." || !/^[\p{L}\p{N}_./]+$/u.test(scope.path)) return [];
+	if (!scope || scope.path === "." || isAbsolute(scope.path) || !/^[\p{L}\p{N}_./]+$/u.test(scope.path)) return [];
 	const exclusions: string[] = [];
 	let prefix = "", bytes = 0;
 	for (const component of scope.path.split("/")) {
@@ -322,27 +364,35 @@ async function enumerate(patterns: string[], exclude: string[], ctx: ToolContext
 		const target = ctx.workspace.resolve(scope.path); const stat = statSync(target.abs);
 		if (target.rel !== scope.path || (scope.directory ? !stat.isDirectory() : !stat.isFile())) throw new ToolError("Search scope changed during plan; rerun against current files");
 	}
+	const outsideScope = scope !== undefined && isAbsolute(scope.path);
+	const searchCwd = outsideScope ? (scope.directory ? scope.path : dirname(scope.path)) : ctx.workspace.root;
+	const targetArg = outsideScope && !scope.directory ? scope.path : ".";
 	const base = ["--no-config", "--files", "--null", "--sort", "path"];
 	// A positive rg -g overrides .gitignore. Intersect it with a conservatively
 	// type-filtered, ignore-respecting inventory so the plan cannot widen its scope.
 	const typeGlobs = inventoryTypeGlobs(patterns, scope);
 	const typeArgs = typeGlobs.length ? ["--type-clear", "mountainsquery", ...typeGlobs.flatMap(glob => ["--type-add", `mountainsquery:${glob}`]), "--type", "mountainsquery"] : [];
 	const scopeArgs = inventoryScopeExclusions(scope).flatMap(pattern => ["-g", pattern]);
-	const baseline = await runInState([...base, ...typeArgs, ...scopeArgs, "--", "."], ctx, state);
+	const baseline = await runInState([...base, ...typeArgs, ...scopeArgs, "--", targetArg], ctx, state, undefined, searchCwd);
 	const allowed = new Set(baseline.stdout.split("\0").filter(Boolean));
 	const args = [...base];
 	for (const p of patterns) args.push("-g", p);
 	for (const p of exclude) args.push("-g", `!${p}`);
-	args.push("--", ".");
-	const result = scope ? baseline : await runInState(args, ctx, state);
+	args.push("--", targetArg);
+	const usePatterns = !scope || patterns.length !== 1 || patterns[0] !== "**/*" || exclude.length > 0;
+	const result = usePatterns ? await runInState(args, ctx, state, undefined, searchCwd) : baseline;
 	const raw = result.stdout.split("\0").filter((path) => {
 		if (!path || !allowed.has(path)) return false;
 		if (!scope) return true;
-		const rel = ctx.workspace.rel(isAbsolute(path) ? path : join(ctx.workspace.root, path));
+		const rel = ctx.workspace.rel(isAbsolute(path) ? path : join(searchCwd, path));
+		if (outsideScope) {
+			const sepChar = scope.path.includes("\\") ? "\\" : "/";
+			return rel === scope.path || (scope.directory && rel.startsWith(`${scope.path}${sepChar}`));
+		}
 		return rel === scope.path || (scope.directory && (scope.path === "." || rel.startsWith(`${scope.path}/`)));
 	});
 	if (raw.length > state.limits.maxFiles) throw new ToolError("File enumeration limit exceeded; narrow the query");
-	const paths = [...new Set(raw.map((p) => ctx.workspace.resolve(p).rel))].sort();
+	const paths = [...new Set(raw.map((p) => ctx.workspace.resolve(isAbsolute(p) ? p : join(searchCwd, p)).rel))].sort();
 	return paths;
 }
 function pathValues(path: PlanPath, ctx: ToolContext, state: RunState, partialIndependent = false): string[] {
@@ -456,7 +506,7 @@ export async function executeQueryPlan(value: unknown, ctx: ToolContext, options
 				if (step.op === "glob" || step.op === "search") {
 					const patterns = step.op === "glob" ? step.patterns : [step.glob ?? "**/*"];
 					const exclude = step.op === "glob" ? step.exclude ?? [] : [];
-					const scope = step.op === "search" && step.path !== undefined ? { path: step.path, directory: statSync(ctx.workspace.resolve(step.path).abs).isDirectory() } : undefined;
+					const scope = step.path !== undefined ? { path: step.path, directory: statSync(ctx.workspace.resolve(step.path).abs).isDirectory() } : undefined;
 					const paths = await enumerate(patterns, exclude, ctx, state, scope);
 					state.inventories.push({ patterns, exclude, paths, ...(scope ? { scope } : {}) });
 					if (step.op === "glob") {

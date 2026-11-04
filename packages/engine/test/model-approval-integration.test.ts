@@ -116,6 +116,22 @@ test("ordinary real file_read completes without calling the approval model", asy
 	assert.equal(judge.requests.length, 0); assert.match(toolResult(main.requests[1]!, "read"), /hello/);
 });
 
+test("lenient review: reads and undoable edits skip the judge, its plain allow runs, and the rest still reach it", async (t) => {
+	const main = new ScriptedModelAdapter([
+		reply([{ id: "look", name: "command_run", args: { argv: ["du", "-sh", "."] } }]),
+		reply([{ id: "edit", name: "file_write", args: { path: "b.txt", content: "x\n" } }]),
+		reply([{ id: "out", name: "file_write", args: { path: "../outside.txt", content: "x\n" } }]),
+		reply([{ id: "wipe", name: "command_run", args: { argv: ["rm", "-f", "a.txt"] } }]),
+		reply(),
+	]);
+	const judge = new Judge(() => judgeReply({ decision: "allow", risk: "medium" }));
+	const f = fixture(t, main, judge, {}, { lenientApproval: true, allowOutsideWorkspace: true, checkpoints: true });
+	assert.equal((await f.agent.run("clear it")).status, "completed");
+	assert.deepEqual(judge.evidence.map((e) => e.action.id), ["out", "wipe"]);
+	const levels = f.events.flatMap((e) => e.type === "approval.resolved" ? [[e.toolCallId, e.level, e.rule]] : []);
+	assert.deepEqual(levels, [["look", "low", "read-only"], ["edit", "low", "reversible"], ["out", "medium", null], ["wipe", "medium", null]]);
+});
+
 test("real file_edit and file_write each pass through the judge before committing their bytes", async (t) => {
 	const main = new ScriptedModelAdapter([
 		reply([{ id: "read", name: "file_read", args: { path: "a.txt" } }]),
@@ -301,4 +317,40 @@ test("a manually approved read pauses an all-read-only batch before a later ordi
 	assert.deepEqual(completed.map((event) => event.toolCallId), ["manual-read", "ordinary-glob"]);
 	assert.ok(completed.every((event) => !event.ok));
 	for (const event of completed) assert.equal((event.details as { decision?: unknown }).decision, "ask");
+});
+
+test("judge can request additional context (read_file + earlier_messages) and emit fetching-context status before allowing", async (t) => {
+	const main = new ScriptedModelAdapter([reply([dangerous]), reply()]);
+	let round = 0;
+	const judge = new Judge((evidence) => {
+		round += 1;
+		if (round === 1) {
+			return judgeReply({
+				decision: "need_context",
+				requests: [{ kind: "read_file", path: "a.txt", startLine: 1, endLine: 10 }, { kind: "earlier_messages", count: 4 }],
+			});
+		}
+		assert.ok(evidence.fetchedContext && evidence.fetchedContext.length === 2);
+		assert.match(evidence.fetchedContext[0]!.content, /1: hello/);
+		return judgeReply({ decision: "allow", authorization: [{ requestId: evidence.userRequests[0]!.id, quote: evidence.userRequests[0]!.text }] });
+	});
+	const f = fixture(t, main, judge);
+	const result = await f.agent.run("请用 sudo 永久删除当前工作区的 cache 目录。");
+	assert.equal(result.status, "completed", result.reason);
+	assert.equal(judge.requests.length, 2);
+	assert.deepEqual(f.executed, ["command_run"]);
+	const approvalEvents = f.events.filter((event) => event.type === "approval.requested");
+	assert.deepEqual(approvalEvents.map((event) => `${event.source}:${event.explanation}`), ["model:核对用户授权与实际操作范围", "model:正在获取更多上下文"]);
+});
+
+test("allowPartialUsage keeps conservative worst-case billing without stopping with the deprecated partial-usage message", async (t) => {
+	const main = new ScriptedModelAdapter([{ ...reply([dangerous]), rawUsage: null }, reply()]);
+	const judge = new Judge();
+	const f = fixture(t, main, judge, {}, { allowPartialUsage: true });
+	const result = await f.agent.run("请删除 cache。");
+	assert.equal(result.status, "completed", result.reason);
+	assert.doesNotMatch(result.reason, /请求用量不完整，已保守计费并停止后续操作/);
+	assert.deepEqual(f.executed, ["command_run"]);
+	assert.equal(result.totals.usagePartialRequests, 1);
+	assert.ok(f.budget.snapshot({ runId: result.runId }).unknownCost > 0);
 });

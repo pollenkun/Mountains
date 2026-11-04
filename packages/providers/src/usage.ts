@@ -16,6 +16,9 @@ export interface RawUsage {
 	completion_tokens_details?: { reasoning_tokens?: number } | null;
 	/** OpenRouter 官方响应中本次请求的实际 USD 费用；必须由官方适配器另行验证。 */
 	cost?: number;
+	/** Anthropic Messages：input_tokens 不含这两项。 */
+	cache_read_input_tokens?: number;
+	cache_creation_input_tokens?: number;
 }
 
 /** @deprecated 使用 RawUsage */
@@ -23,7 +26,8 @@ export type DeepSeekRawUsage = RawUsage;
 
 const EMPTY: Usage = { input: null, cacheRead: null, cacheWrite: null, output: null, reasoning: null, total: null, partial: true };
 
-const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+/** A token count is a non-negative safe integer; anything else is unknown, whether or not the budget guard is on. */
+const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : undefined);
 
 /**
  * 原始 usage → 账本四项（D-008）。普通输入 = 未命中且未写入缓存的部分；缓存读取 = 命中；输出含推理。
@@ -51,6 +55,11 @@ export function normalizeUsage(provider: ProviderId, raw: RawUsage | null | unde
 		if (hit === undefined && prompt !== undefined && raw.prompt_tokens_details == null) hit = 0;
 		write = num(raw.prompt_tokens_details?.cache_write_tokens) ?? 0;
 		miss = prompt !== undefined && hit !== undefined ? prompt - hit - write : undefined;
+	} else if (provider === "anthropic") {
+		// input_tokens 不含缓存读和缓存写，三项分开计。
+		hit = num(raw.cache_read_input_tokens);
+		write = num(raw.cache_creation_input_tokens) ?? null;
+		miss = prompt;
 	} else if (provider === "siliconflow") {
 		// 硅基官方兼容接口提供命中/未命中字段，未给出时才读取标准字段。
 		hit = num(raw.prompt_cache_hit_tokens) ?? num(raw.prompt_tokens_details?.cached_tokens);
@@ -61,6 +70,8 @@ export function normalizeUsage(provider: ProviderId, raw: RawUsage | null | unde
 		hit = num(raw.prompt_tokens_details?.cached_tokens);
 		miss = prompt !== undefined && hit !== undefined ? prompt - hit : undefined;
 	}
+	// More cache hits (and writes) than prompt tokens leave a negative remainder: the parts are unknown, not negative.
+	if (miss !== undefined && miss < 0) miss = undefined;
 	const total = num(raw.total_tokens) ?? (prompt !== undefined && out !== undefined ? prompt + out : undefined);
 	const u: Usage = {
 		input: miss ?? null,
@@ -74,7 +85,9 @@ export function normalizeUsage(provider: ProviderId, raw: RawUsage | null | unde
 	// Native hit/miss fields must still agree with the provider's prompt total.
 	// A matching total_tokens alone cannot make contradictory cheaper parts known.
 	u.partial = u.input === null || u.cacheRead === null || u.output === null
-		|| prompt !== undefined && miss !== undefined && hit !== undefined && miss + hit + (write ?? 0) !== prompt;
+		|| (provider === "anthropic" && u.cacheWrite === null)
+		|| (provider !== "anthropic" && prompt !== undefined && miss !== undefined && hit !== undefined && miss + hit + (write ?? 0) !== prompt)
+		|| u.reasoning !== null && u.output !== null && u.reasoning > u.output;
 	return u;
 }
 

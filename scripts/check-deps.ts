@@ -12,10 +12,13 @@ const ALLOWED: Record<string, string[]> = {
 	context: ["@mountains/protocol"],
 	providers: ["@mountains/protocol", "@earendil-works/pi-ai"],
 	tools: ["@mountains/protocol"],
+	computer: ["@mountains/tools", "@crowecawcaw/xa11y", "ws"],
+	themes: [],
 	checkpoints: [],
 	telemetry: ["@mountains/protocol"],
 	engine: ["@mountains/protocol", "@mountains/context", "@mountains/providers", "@mountains/tools", "@mountains/telemetry", "@mountains/checkpoints"],
-	cli: ["@mountains/protocol", "@mountains/engine", "@mountains/providers", "@mountains/tools", "@mountains/telemetry", "@mountains/context"],
+	cli: ["@mountains/protocol", "@mountains/engine", "@mountains/providers", "@mountains/tools", "@mountains/telemetry", "@mountains/context", "@mountains/computer"],
+	desktop: ["@mountains/protocol", "@mountains/cli", "@mountains/checkpoints", "@mountains/themes", "@mountains/tools", "electron", "electron-updater", "semver"],
 };
 
 function walk(dir: string): string[] {
@@ -29,6 +32,7 @@ const problems: string[] = [];
 const roots = [
 	...readdirSync("packages").map(pkg => ({ pkg, dir: join("packages", pkg) })),
 	{ pkg: "cli", dir: join("apps", "cli") },
+	{ pkg: "desktop", dir: join("apps", "desktop") },
 ];
 for (const { pkg, dir } of roots) {
 	const src = join(dir, "src");
@@ -38,8 +42,9 @@ for (const { pkg, dir } of roots) {
 	} catch {
 		continue;
 	}
-	const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
+	const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 	const declared = new Set(Object.keys(manifest.dependencies ?? {}));
+	if (pkg === "desktop") for (const name of Object.keys(manifest.devDependencies ?? {})) declared.add(name);
 	const allowed = new Set(ALLOWED[pkg] ?? []);
 	for (const f of files) {
 		const text = readFileSync(f, "utf8");

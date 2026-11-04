@@ -1,0 +1,388 @@
+2026-10-22 更新：本文是 2026-10-19 正式验收的历史记录。20 项仍没有同版本整轮通过记录。
+启动器和虚拟机已经在后续工作中更新；下文“电脑仍锁屏”“仍用 open -g”“尚未收到回答”不能当作当前状态。最新实现与虚拟机结果见 BETA1.md、WINDOWS.md 和 test/vm/README.md。
+旧全套入口仍保持关闭。普通输入的持久记录、账户测试环境、独立结果核对和准确清理尚未齐备，不能用单元测试或 beta1-live 七项取代这 20 项。
+以下保留原始结论和失败证据，不改写旧成绩。
+
+20项正式验收仍未通过。电脑仍锁屏，本轮没有新增窗口实测。
+
+可见Chrome的安全关闭方案已做出候选。它保留本次启动返回的应用对象，核对系统出生身份和程序路径。先请求正常退出，必要时才对原对象强制退出。只有原对象和系统记录都证实结束，才确认关闭；不会按进程号猜一个程序来关闭。该候选还没接入产品。
+
+候选内部22组Swift检查通过，真实系统接口代码也编译成功。初版发现的请求报错后跳过清理、正常退出被跳过、权限错误原因不准已修。独立Agent又复现排队后重新计时的漏洞；修后同一探针没有发出过期请求。这些运行用的是假应用对象，没有启动或关闭真实Chrome。
+
+最终完整自动检查：2425项通过，29项因环境跳过，没有失败，耗时46.07秒。425份仓库文件在检查期间未变。22组Swift检查包含在一个外层检查中，不另加进总数；这份成绩也不是20项正式验收成绩。
+
+生产仍用原来的open -g。已请用户确认是否允许换成不主动激活的系统启动接口NSWorkspace，因为用户此前明确指定过open -g。尚未收到回答。即使同意，仍须接上启动中断、迟到结果处理、多客户端共享和安全关闭，再用独立监测验证不会抢焦点；activates=false本身不是通过证明。
+
+最近只读核对中，原Preview测试实例仍是原来的进程，原图片未变；锁屏时没有发输入或盲目关闭。账户安全环境、原生下拉框、剪贴板恢复与实际操作速度仍未齐。旧日常脚本和旧整套入口继续禁止运行。没有新增付费调用、真实账户操作、提交或推送，剪贴板仍每次审批。
+
+本代理跑了完整检查、候选检查和只读桌面核对。独立Agent另跑候选检查与原反例，未替我跑正式窗口任务。下一步等桌面解锁及启动方式答复；20项不改判为完成。
+
+附录：20项当前没有同版本整轮成绩
+
+耗时按各次运行记录，含该轮准备、模型决策与收尾；不同版本不相加。未运行不是通过。审批次数只按实际记录；有审批的成功项均由测试脚本逐次回答。
+
+| 项目 | 结果 | 耗时/上限 | 调用/上限 | 审批 | 前台、焦点 | 重试或兜底 |
+|---|---|---|---|---|---|---|
+| 1 中文、emoji与保存 | 失败 | 51.15/90秒 | 2/10 | 0 | 前台未变；键盘被抢约7.48秒 | 未靠兜底通过 |
+| 2 边界与报错恢复 | 旧版单项通过 | 44.70/90秒 | 6/12 | 1 | 独立核对通过 | 无 |
+| 3 快捷键与批量动作 | 未运行 | — | 0/14 | 0 | 未测 | 未测 |
+| 4 列表换位与旧元素 | 旧版单项通过 | 49.37/120秒 | 3/14 | 1 | 独立核对通过 | 无 |
+| 5 多窗口和对话框 | 失败 | 42.69/150秒 | 5/18 | 1 | 开面板后焦点历史无法确定 | 未靠兜底通过 |
+| 6 Web表单校验与提交 | 旧版单项通过 | 27.32/90秒 | 3/12 | 1 | 完整独立核对通过 | 无；前三轮失败保留 |
+| 7 Web加载失败、重试与取消 | 旧版单项通过 | 29.50/120秒 | 5/15 | 1 | 完整独立核对通过 | 无；任务规定的一次重试 |
+| 8 Web新增、编辑和删除 | 旧版单项通过 | 36.31/150秒 | 6/18 | 2 | 完整独立核对通过 | 无 |
+| 9 Web筛选与分页 | 旧版单项通过 | 43.36/120秒 | 6/14 | 1 | 完整独立核对通过 | 无 |
+| 10 Web路由、弹窗与状态保留 | 既有版本单项通过 | 85.01/120秒 | 12/14 | 1 | 完整独立核对通过 | 无 |
+| 11 纯文本编辑并保存 | 未运行 | — | 0/14 | 0 | 未测 | 未测 |
+| 12 备忘录新建、修改和删除 | 未运行；缺安全账户环境 | — | 0/14 | 0 | 未测 | 未测 |
+| 13 访达建文件夹、改名和移动 | 未运行 | — | 0/18 | 0 | 未测 | 未测 |
+| 14 预览旋转并保存图片 | 未运行；启动收尾组件失败，等解锁核对 | — | 0/8 | 0 | 未测 | 未测 |
+| 15 测试日历与事件修改 | 未运行；缺安全账户环境 | — | 0/32 | 0 | 未测 | 未测 |
+| 16 提醒事项列表与完成状态 | 未运行；缺安全账户环境 | — | 0/26 | 0 | 未测 | 未测 |
+| 17 富文本文档与PDF导出 | 未运行；剪贴板恢复证明未齐 | — | 0/22 | 0 | 未测 | 未测 |
+| 18 只读系统信息 | 未运行 | — | 0/5 | 0 | 未测 | 未测 |
+| 19 跨应用搬运与核对 | 未运行；缺安全账户环境 | — | 0/14 | 0 | 未测 | 未测 |
+| 20 软件与Web回执对账 | 未运行 | — | 0/22 | 0 | 未测 | 未测 |
+
+未运行项仍缺完整的真实入口和独立核对。账户类项目不得改用真实账户凑通过。日常脚本与原整个验收入口的安全限制继续生效。
+
+附录：第6项前三次失败仍保留
+
+第一次没有保留可写输入通道，业务工具调用为0。提前EOF被旧读取循环漏掉，90秒截止也未能结束。外部恢复先核身份并关闭自有Chrome，再结束卡住的原控制器；监测器随EOF结束。原历史另有一次键盘属性读取未知，不能宣称全程正常。
+第二次调用3次。第三次由本代理误用字符串expect；旧产品在后一步才校验，所以前面的字段操作可能已执行。最终回报丢了这些信息，不能说未输入。服务端只有一次空表单报错、0次有效保存；原监测历史没发现变化，但完整证明缺目标收据，因此整项失败。
+第三次调用3次。一次空表单报错、一次有效保存与私有浏览器请求一一对应；工具读到Submitted。两个采样的实际时间相隔23.881秒，系统运行时钟相隔3.568秒，两者都超过0.15秒上限。系统日志确认08:54:25休眠、08:54:59至08:55:00后台唤醒，不能把所有剩余间隔归为监测器错误。最后独立DOM未读取，dataVerdict为空。六项资源与文件检查成功，完整焦点检查失败，不能写全部收尾通过。
+
+附录：速度仍缺足够样本
+
+第四轮从控制器计时开始到交给模型，准备4.12秒，包含在27.32秒总时间内。第一次读取含外部核对0.352秒、单次点击0.517秒、四步合并0.637秒；均是少量实际样本，不足各30次热读取和普通动作，不能判整体95%速度通过。说明书文本2479、图像2496字符，均低于2500上限。
+
+附录：仍要解决的问题
+
+原生关闭的下拉框会抢全局键盘；开面板的历史焦点仍不确定。失败批次中，后续被拒绝的步骤仍缺自身PID，不能声称该类完整焦点证明通过。旧PID强制信号回退已删除。同一运行进程的共享客户端保留真实原子进程对象并等待退出；可见或跨进程失去原对象且卡死时仍不能强制收尾。全套同版本20项、各30个速度样本、会话剪贴板指纹与独立恢复、并发/取消等共同门槛尚未全部完成。DeepSeek未获新增付费授权，未启动。
+
+附录：文件和证据
+
+此前v11完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v11-20261019-AJb42Z/result.json
+上一轮超时：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v10-20261019-MPQtph/result.json
+超时独立复核：/tmp/mountains-input-claim-4100-independent-review-20261019.txt
+此前v11检查后只改三份结果文档；指纹差异记录：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v11-20261019-AJb42Z/report-only-update-2.json
+各轮都在 /Users/beluga383/Movies/Mountains 测试素材/ 下：
+formal-native-20261019-92903072/evidence/partial-verdict.json
+formal-native-case2-expect-20261019-1b35c9ba/evidence/partial-verdict.json
+formal-native-case4-fixed-20261019-dd321d71/evidence/partial-verdict.json
+formal-native-case5-20261019-bece4057/evidence/partial-verdict.json
+formal-web-case6-20261019-reviewed-510bacf4/evidence/external-run-verdict.json
+formal-web-case6-20261019-tty-263ab687/evidence/partial-verdict.json
+formal-web-case6-20261019-batch-9337ef24/evidence/partial-verdict.json
+技术接线根（不能计正式UI通过）：web-cdp-wiring-20261019-17ce23bf/evidence/wiring-result.json
+各正常收尾根的evidence/sha256-index.json保留原始产物指纹；控制器、Chrome和监测器的原身份均经独立回读结束。
+批量回报与工具说明独立审查：/tmp/mountains-formal-web6-batch-context-independent-review-20261019.txt
+输入通道独立审查：/tmp/mountains-formal-web6-transport-independent-review-20261019.txt
+本轮休眠及产物独立审查：/tmp/mountains-web6-batch-sleep-final-independent-review-20261019.txt
+电源原始记录：/tmp/mountains-web6-batch-power-window-independent-20261019.log
+独立实际构建和产物核对：/tmp/mountains-web6-batch-failed-independent-audit-corrected-20261019.json
+此前v11报告更新前的三份旧文档：/tmp/mountains-formal-reports-before-v11-20261019.json
+
+
+服务端密钥只留在原控制器内存，结束后销毁。事后审查核对生产时验签记录与冻结摘要，不能重新计算原HMAC；该边界保留在独立报告中。
+
+附录：第四轮首次通过与防睡组件
+第四轮原任务、原90秒/12次调用/150毫秒条件不变。原错误请求与唯一有效请求均已真实签名提交，准确标签页的独立读取逐字段相等。所有原身份和产物由独立Agent复核。此前失败不改判，旧版第2/4项不合并计分。
+正式第四轮：/Users/beluga383/Movies/Mountains 测试素材/formal-web-case6-20261019-awake-a7530db8/evidence/partial-verdict.json
+独立正式复核：/tmp/mountains-web6-awake-final-independent-review-20261019.txt
+技术组件：/Users/beluga383/Movies/Mountains 测试素材/power-component-20261019-first-15d7ba7e/result.json
+组件独立审查：/tmp/mountains-run-awake-power-final-independent-review-20261019.txt
+生命周期回归：test/run-awake-lifecycle.test.ts；独立报告/tmp/mountains-run-awake-lifecycle-independent-review-20261019.txt
+终态日志故障四分支：/tmp/mountains-formal-web6-terminal-eio-fixed-independent-20261019.json
+此前v14完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v14-20261019-uBJyhO/result.json
+本轮只改三份报告的记录：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v14-20261019-uBJyhO/report-only-update.json
+三份更新前原文：/tmp/mountains-formal-reports-before-v14-20261019.json
+
+
+附录：第7项首次正式运行
+实际采用5次单步业务工具，每步从真实结果决定下一步，没有固定UI流程脚本。控制器准备4.067秒已包含在29.50秒总时间；首次读取含外部核对0.369秒，四次点击含外部核对约0.522至0.531秒，少量样本低于普通动作4秒目标，不能代替完整95%统计。焦点最长采样间隔33.903毫秒，低于150毫秒上限。一次规定的业务重试不属于修复后的重新尝试，旧失败仍全部保留。
+原生下拉框只读结论：/tmp/mountains-native-closed-popup-readonly-independent-20261019.txt
+服务与判分独立审查：/tmp/mountains-web7-services-final-independent-20261019.txt
+请求配对原反例和修复：/tmp/mountains-web7-request-pairing-independent-20261019.json；/tmp/mountains-web7-request-pairing-fixed-independent-20261019.json
+正式结果：/Users/beluga383/Movies/Mountains 测试素材/formal-web-case7-20261019-paired-c62e0d94/evidence/partial-verdict.json
+独立正式审查：/tmp/mountains-web7-formal-final-independent-review-20261019.txt
+此前v16完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v16-20261019-fRWuNl/result.json
+仅三份报告差异：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v16-20261019-fRWuNl/report-only-update.json
+更新前原文：/tmp/mountains-formal-reports-before-v16-20261019.json
+第一份冷准备在开测前被新源码替代，没有freeze或正式调用：formal-web-case7-20261019-reviewed-8392ab5e/evidence/preparation-superseded.json
+
+
+附录：第8项首次正式运行
+控制器准备4.211秒已计入36.31秒总时间。首次读取连外部核对0.367秒，五次普通调用连核对0.457至0.567秒；包含7个底层批量步骤和2次单步点击，不能拿合批总耗时代替各步耗时。各30次样本不足，不能宣布整体速度通过。工具点击回报unconfirmed，但当次真实结果已出现指定新任务/修改/排序/删除状态，因此没有重复点击；最终独立DOM与实际服务端状态再次核对。
+独立焦点记录2384条，其中1740个采样；全过程严格150毫秒条件通过。模型实际询问准确own-1及编辑后的名称，脚本仅为下一次准确Delete单步回答。四次真实POST分别新增、新增、修改、删除，请求与结果一一对应。逆序独立DOM保留在删除前检查点。
+原任务150秒/18次调用和正式登记均未放宽，原第6项失败及其他历史均保留。准备根formal-web-case8-20261019-reviewed-e15f07ac在freeze及任何UI之前因编辑键入口修复被新源码替代，记录在该根evidence/preparation-superseded.json，不算一次正式执行。
+第8项正式结果：/Users/beluga383/Movies/Mountains 测试素材/formal-web-case8-20261019-editing-7b2cf130/evidence/partial-verdict.json
+开测前独立审查：/tmp/mountains-case8-preflight-independent-review-20261019.txt
+正式独立复核：/tmp/mountains-case8-formal-final-independent-review-20261019.txt
+此前v18完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v18-20261019-ubtS1k/result.json
+仅三份报告差异：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v18-20261019-ubtS1k/report-only-update.json
+更新前原文：/tmp/mountains-formal-reports-before-v18-20261019.json
+
+
+附录：第9项首次正式运行
+控制器准备4.207秒，已计入43.36秒总时间。首次读取连外部核对0.378秒，五次普通调用连核对0.458至0.549秒；包含8个底层动作，不能把合批总时间冒称每步耗时。两份独立检查点也计入总时间。仍不足各30次样本，整体p95字段为空。工具点击标记unconfirmed时，模型据实际变化继续，没有重复已完成动作。
+独立核对11287冻结文件、80构建/素材及477产物。2871条焦点记录含2094个采样，最长35.180毫秒。paged→filtered→唯一POST→complete真实有序；13条全字段仅111评论改变；清空后实际第一页101到104及空筛选、13条总数均正确。私有浏览器证明与接收正文、签名结果一一对应。HMAC密钥已销毁，事后审查没有重新计算原HMAC；采样和通知不能排除任意短瞬间变化，不是唯一OS网络写入者证明。
+开发期v19完整检查曾1项失败：旧子验证器测试把只有页码/ID、且记录不完整的证据当成功，新验证器正确拒绝。现补完整原数据、结构化行、唯一POST和时序；原阶段/目标/时间负例及新增labels-only拒绝均保留。初版Node参数属性载入错误及类型检查命令路径错误也保留在开发记录，修后完整检查通过。没有用重跑抹掉v19失败，正式第9项只有本次首轮。
+正式结果：/Users/beluga383/Movies/Mountains 测试素材/formal-web-case9-20261019-reviewed-4dc0917a/evidence/partial-verdict.json
+任务规划审查：/tmp/mountains-case9-plan-independent-review-20261019.txt
+实现审查及修后补充：/tmp/mountains-case9-preflight-code-independent-review-20261019.txt；/tmp/mountains-case9-updated-preflight-independent-review-20261019.txt
+正式独立复核：/tmp/mountains-case9-formal-final-independent-review-20261019.txt
+独立JSON：/tmp/mountains-case9-formal-independent-audit-20261019.json
+独立逐项指纹：/tmp/mountains-case9-formal-independent-fingerprints-20261019.json
+v19失败：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v19-20261019-evzYJe/result.json
+开发失败记录：/tmp/mountains-case9-development-failures-20261019.json
+最新完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v20-20261019-UZyUdq/result.json
+仅三份报告差异：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v20-20261019-UZyUdq/report-only-update.json
+更新前原文：/tmp/mountains-formal-reports-before-v20-20261019.json
+第10项尚是设计备忘，没有正式执行：/tmp/mountains-case10-preflight-plan-20261019.txt
+
+
+附录：第10项前置检查仍不能算正式通过
+旧真实组件v1因错误断言弹窗返回形状失败；v2在真实确认框中准备超过2秒仍未完成，关掉原Chrome后等待真实查询结束，原私有连接关闭仍失败。v3只用于诊断，确认原页两个只读查询会阻塞、另一自有空白页的真实时间可立即返回；没有正式请求许可或焦点结论。v4新方法准备约15毫秒成功，但关闭时等待了自己，整组件失败。失败原记录未覆盖。
+自等待和独立五个反例修复后，v5完整组件通过；最后的v6核对当前源码指纹再通过，约13.58毫秒，五项收尾成功。仅一次真实样本，不能算整体95%速度或20项成功。第一次类型检查因会话编号的静态类型失败，已加运行时编号断言，修后类型及整库检查通过。
+真实当前组件：/tmp/mountains-case10-dialog-clock-component-v6-20261019.json
+技术前置完整v21检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v21-20261019-QLhIPf/result.json
+最新含详情服务完整v22检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v22-20261019-vuiHfR/result.json
+五处原反例报告：/tmp/mountains-case10-observer-initial-code-independent-review-20261019.txt
+五处修后独立报告：/tmp/mountains-case10-observer-fixed-code-independent-review-20261019.txt
+独立证据指纹：/tmp/mountains-case10-observer-fixed-independent-fingerprints-20261019.json
+详情服务独立报告：/tmp/mountains-case10-detail-service-independent-review-20261019.txt
+详情服务测试及指纹：/tmp/mountains-case10-detail-service-independent-targeted-20261019.json
+原失败记录：/tmp/mountains-case10-clock-development-failures-20261019.json
+所有真实组件版本：/tmp/mountains-case10-dialog-clock-component[-v2|-v3|-v4|-v5|-v6]-20261019.json
+下一步接入备忘：/tmp/mountains-case10-integration-next-20261019.txt
+仅报告更新指纹：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v22-20261019-vuiHfR/report-only-update.json
+更新前原文：/tmp/mountains-formal-reports-before-v22-20261019.json
+
+
+附录：第10项首次正式通过，旧开发失败继续保留
+
+实际按每次读取决定下一步，没有存好的UI操作序列。一次读取、15个动作步骤，共12次业务工具调用；两个三步批次不冒称单步耗时。运行时准备9.174秒计入85.005秒。素材编译在正式运行前单列，不能冒称工具冷启动。每次调用连外部核对约0.328至0.705秒，但热读取和普通动作都未各满30次，整体95%字段仍为空。
+
+取消、刷新后、Escape后三个独立检查点和最终DOM均核对实际文档及载入编号。真实confirm依次取消、接受，然后alert通过实际Enter关闭。唯一POST留在第二个文档连接；第三个连接虽没有请求，也保留第二个的原证明。五次真实导航事件有连续观察。最终原300毫秒回调真正运行，独立DOM读到完成文字。
+
+独立复核11298个冻结文件、84份构建和素材、567份产物。5574条焦点记录中4174次采样，最长38.325毫秒；生产调用和批次每步的PID及进程出生身份都有前后核对。原120秒、14次调用、150毫秒监测条件未放宽。一次会话审批明确写测试脚本代答。所有14次已登记运行及原计划均保留，旧失败不改判。
+
+开发中独立代理找出并复验修复：停止期间新连接仍能发请求；读取参数可冒充导航；操作记录时间不相符仍被接纳；读取结果假装键盘或点击；页面地址可冒充等待正文；检查超时后迟到文字可误报确认；结果读取期间新标签页漏报；明确预期没出现却继续后续输入。v24完整检查在类型检查阶段失败，未跑单元测试；修后v25通过，新增反例修复后v26全绿。原反例、失败日志和针对性复验均保留。
+
+独立代理的13类正式检查全过，只读证据，没有重跑UI。HMAC密钥已在原控制器销毁，事后没有重新计算原HMAC。采样和通知不能排除任意短且无通知的OS变化，也不是唯一OS网络写入者证明。本版只有第10项；不得与旧版成绩拼成全20项。
+
+正式结果：/Users/beluga383/Movies/Mountains 测试素材/formal-web-case10-20261019-reviewed-e3418afd/evidence/partial-verdict.json
+独立正式报告：/tmp/mountains-case10-formal-final-independent-review-20261019.txt
+独立摘要：/tmp/mountains-case10-formal-final-independent-summary-20261019.json
+独立指纹：/tmp/mountains-case10-formal-independent-fingerprints-20261019.json
+独立结束再核对：/tmp/mountains-case10-formal-independent-final-recheck-20261019.json
+主代理只读复核：/tmp/mountains-case10-formal-root-readonly-audit-20261019.json
+跨页面许可与独立核对修复审查：/tmp/mountains-case10-fixed-readback-wiring-independent-review-20261019.txt
+61项针对性检查：/tmp/mountains-case10-fixed-readback-targeted-independent-20261019.json
+明确等待正文修复审查：/tmp/mountains-web-text-wait-fixed-independent-review-20261019.txt
+14项针对性检查：/tmp/mountains-web-text-wait-fixed-targeted-independent-20261019.json
+等待正文真实组件：/tmp/mountains-case10-text-wait-live-component-20261019.json
+该组件用自己的Chrome和本地页，300毫秒回调在约319.5毫秒内读到，原始输入只有一次按下松开，四项收尾全过。没有独立焦点监测，不单独计正式通过。
+本轮开发失败原记录：/tmp/mountains-case10-navigation-development-failures-20261019.json
+此前完整v23：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v23-20261019-858AZB/result.json
+类型检查失败v24：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v24-20261019-RyeRS2/result.json
+此前完整v25：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v25-20261019-yrjFCu/result.json
+最新完整v26：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v26-20261019-tj4a8W/result.json
+仅三份报告差异：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v26-20261019-tj4a8W/report-only-update.json
+更新前原文：/tmp/mountains-formal-reports-before-v26-20261019.json
+
+
+附录：第14项只读绑定代码通过，启动和退出尚未实现
+
+新增ReadOfficeWindows独立读取器只读实际AX属性与系统窗口，不启动、不聚焦、不关闭应用。进程出生身份和可执行路径前后相同；两次清点窗口和文档，系统CG窗口全部保留，不按层、透明度或是否在屏幕上忽略。TS只接受恰好一份本轮图片文档和一一对应的系统窗口。窗口号歧义、另一PID的AX元素、嵌套面板、路径重定向或硬链接均不能放行。只在AX明确没有声明可选属性时认为缺省；声明过却读不到，仍是读取失败。没有AXEdited时保留未知，不能当成已保存或可安全关闭。
+
+实际公共树检查用Swift Testing运行10个函数、15种场景；Node共32项通过。独立代理直接提取同一Swift读取函数，只把AX/CG接口替换成内存，再交给实际TS消费，13种组合检查通过。不是靠缺少新增字段而提前报错冒充修复。初稿硬链接会同时改目录外自有测试文件、忽略多出的系统窗口、把noValue当空，以及接受环/多父的反例原样保留。旧26项仅属于中间版。
+
+本轮未启动系统Preview，未用有效PID执行新读取器，也未运行整个prepare或正式第14项。安全启动和关闭仍需实际NSWorkspace返回的新实例、全部文档路径核对、EOF/迟到回调处理、原始进程出生身份和真实退出确认。不能用terminate=true、应用名或启动器PID代替退出证据，不以ApplePersistenceIgnoreState假设替代窗口清点。只读组件不放开旧日常脚本和旧整个验收入口。
+
+首次25项检查在Swift编译处失败，因为本机SDK不存在kAXSheetsAttribute；已改公开AXChildren及AXSheet语义。首次32项检查中Swift场景本身通过，但Node把参数化场景数误当函数数，harness计数失败，修正为10函数15场景并保留原失败。另一次SwiftPM检查长时间未成功，具体机制仍未完整确定；改用普通日志文件避免捕获管道被后代持有，超时强制结束驱动，未把后来成功改写成先前成功。独立复验和完整检查期间源码固定。
+
+完整v27检查03:20:00UTC开始；系统日志11:20:30+0800进入睡眠，11:38:05后台唤醒，记录1055秒睡眠。v27超时并无成功摘要，保持失败。没有发现仍运行的本轮测试进程。v28复用已审临时防睡组件，AC电源下只用-i/-s，220秒上限，创建到整库检查结束都有实际身份和请求记录；40.11秒检查完成后原进程和两项请求已消失。没有-d/-u或永久设置。以上是自动检查运行条件，不是普通动作95%速度成绩。
+
+附录：本轮源码和证据
+只读读取器：packages/computer/test/acceptance/native/ReadOfficeWindows.swift
+实际树/属性转换：packages/computer/test/acceptance/native/OfficeDocumentTree.swift
+窗口绑定与读取：packages/computer/test/acceptance/office-window-proof.ts
+Node测试：packages/computer/test/office-window-proof.test.ts
+Swift场景：packages/computer/test/fixtures/office-tree-tests.swift
+独立预案：/tmp/mountains-case14-preflight-plan-independent-20261019.txt
+初稿审查：/tmp/mountains-office-window-first-independent-review-20261019.txt
+最终审查：/tmp/mountains-office-window-final-independent-review-20261019.txt
+最终摘要：/tmp/mountains-office-window-final-independent-summary-20261019.json
+最终指纹：/tmp/mountains-office-window-final-independent-fingerprints-20261019.json
+32项独立检查：/tmp/mountains-office-window-final-targeted-independent-20261019.json
+13种独立重放：/tmp/mountains-office-window-final-replays-independent-20261019.json
+原硬链接反例：/tmp/mountains-office-hardlink-initial-snapshot-independent-20261019.json
+原系统窗口反例：/tmp/mountains-office-cg-original-independent-20261019.json
+原属性读取反例：/tmp/mountains-office-child-absence-original-independent-20261019.json
+原树结构反例：/tmp/mountains-office-invalid-tree-original-independent-20261019.json
+本代理开发失败：/tmp/mountains-case14-office-reader-development-failures-20261019.json
+完整v27超时：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v27-20261019-FgtUVx/result.json
+最新完整v28：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v28-20261019-UryOsI/result.json
+临时防睡创建/检查/退出：/tmp/mountains-full-check-awake-v28-20261019.json
+仅三份报告差异：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v28-20261019-UryOsI/report-only-update.json
+更新前原文：/tmp/mountains-formal-reports-before-v28-20261019.json
+
+
+附录：本轮启动收尾代码通过纯检查，真实组件仍失败
+
+实际共享OfficeSession状态处理、NSWorkspace新实例启动器、独立窗口读取与精确退出适配已实现。一次性启动许可紧邻真正系统请求；异步准备后取消、迟到回调、断管、日志失败和SIGINT/SIGTERM均保留失败。只要启动曾发出，丢回执不能证明没创建。关闭只按完整清点后的自有未编辑图片；terminate返回true不等于退出，仍等原对象与OS出生身份共同确认。
+
+当前Core由Swift Testing运行25个函数、28种场景；树、CF类型及属性处理运行13个函数、18种场景。真实管道的提前EOF、关闭、半行、重复、尾随和超长输入都零创建；自己的纯Swift子进程在主线程忙时实际收到SIGINT或SIGTERM，也零创建。C标志只处理本进程取消，不安装系统输入钩子。严格Swift6和真实guardian已编译。它们不是实际Preview关闭成功的证据。
+
+独立审查另外复核了启动/取消反例、真实日志EIO下继续收尾、MainActor等待期间Foundation计时器和原收据候选丢失。原失败组件收据已有owner，但控制器仅收ready/unverified导致候选空数组误绿；现所有带owner的收据均收集，并对原收据重放核对。原失败结果不修改。首次修后stdin结果曾被同名signal结果覆盖；原未修失败没动，修后两组已各自独立重跑到唯一文件，记录缺口保留。
+
+实际组件总用时2.554秒，业务工具调用0次，不运行正式14。真实新实例已取得，但首次AX属性名读取和清理读取失败。控制器、guardian、监测器和临时防睡均独立回读已退出；只有本轮Preview原出生实例仍活，恢复未知。没有按名字或旧PID盲关。107次样本显示前台和键盘均为原PID412，最长33.908毫秒，小于150毫秒门槛；目标AX监听却不可用，且没有退出尾段，所以不能宣称全程无短暂抢焦点。
+
+后续都是新建监测器下的只读诊断，均没输入。实际AXWindows只含Application自身，孩子是自身和菜单栏；图有369节点、唯一回环0到0，没有Window或Image文档节点。C语言直接取CFArray原项也与Application相等。CopyAttributeValues和CopyMultipleAttributeValues同样返回Application。AXDocument的-25205是attributeUnsupported；不是noValue（-25212）。这些证据排除Swift数组转换为回环原因，不能证明锁屏就是原因。
+
+独立CF纯探针另证实：CFString数组也可能通过Swift的[AXUIElement]转换，所以现在使用原始CFArray逐项类型标签核实，之后才调用AX。此修复保留根AXWindow、回环、多父、部分读取、CG一一对应、完整路径和未编辑证明。没有跳过异常节点或把菜单当文档。新增桌面前检只拒绝现场明确为loginwindow的验收启动；它不是系统解锁状态的原子保证，完整独立监测仍必须通过。产品可操作应用范围未改。
+
+本代理实际执行上述组件、只读诊断、进程元数据和完整仓库检查。独立代理运行纯程序/编译并审查原始证据，没有替我执行真实AX、窗口输入或外部恢复。第10项既有冻结版本仍单列；本轮新增代码不套用旧单项通过。
+
+附录：本轮文件与证据
+共享状态处理：test/acceptance/native/OfficeSessionCore.swift
+真实启动收尾：test/acceptance/native/OfficeSessionMain.swift
+本进程信号：test/acceptance/native/OfficeSignals.c、OfficeSignals.h
+冷构建：test/acceptance/office-signals-build.ts、prepare.mjs
+独立读取与类型核对：test/acceptance/native/ReadOfficeWindows.swift、OfficeDocumentTree.swift、office-window-proof.ts
+回归：test/office-session.test.ts、office-window-proof.test.ts、fixtures/office-session-tests.swift、office-control-tests.swift、office-tree-tests.swift
+原Core反例与修复：/tmp/mountains-office-session-core-independent-review-20261019.txt
+真实接线独立审查：/tmp/mountains-office-session-real-adapter-independent-review-20261019.txt
+CF类型/实际角色图审查：/tmp/mountains-office-ax-graph-fixed-independent-review-20261019.txt
+最终桌面前检审查：/tmp/mountains-office-unlocked-preflight-final-independent-review-20261019.txt
+开发编译失败：/tmp/mountains-office-session-development-failure-20261019.json
+真实失败：/Users/beluga383/Movies/Mountains 测试素材/office-lifecycle-component-20261019-d671ed96/evidence/component-result.json
+原证据指纹：/Users/beluga383/Movies/Mountains 测试素材/office-lifecycle-component-20261019-d671ed96/evidence/sha256-index.json
+只读节点图：/Users/beluga383/Movies/Mountains 测试素材/office-failure-inspect-20261019-08db2ec7/result.json
+C原始对象对照：/Users/beluga383/Movies/Mountains 测试素材/office-failure-inspect-20261019-ff2ed883/result.json
+C数组接口对照：/Users/beluga383/Movies/Mountains 测试素材/office-failure-inspect-20261019-21c372d1/result.json
+最后原身份状态：/tmp/mountains-office-final-process-state-20261019.json
+组件控制器：/tmp/mountains-office-lifecycle-component-20261019.mjs
+其余只读失败和诊断根：office-failure-inspect-20261019-9949666e、a6f0e985、50192341、99aa87f1、2b46bf39；均在上述素材目录。最初两份准备根639257ec、8b714dc1因源码改动未运行，不冒充真机次数。
+当前完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v34-20261019-kVIeZL/result.json
+当前临时防睡退出：/tmp/mountains-full-check-awake-v34-20261019.json
+仅三份报告差异：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v34-20261019-kVIeZL/report-only-update.json
+三份更新前原文：/tmp/mountains-formal-reports-before-v34-20261019.json
+
+
+附录：本轮浏览器关闭修复与证据
+
+BrowserClients在进程内保留真实ChildProcess及启动时已订阅的close Promise。磁盘模式按私有客户端目录的真实路径、设备号和inode共享，未从owner.json重建进程对象。端点和owner须相符；目录被替换、owner不符不采用旧对象。owner与lifetime在首个await前复制，返回值也不暴露内部owner。子进程真实close后才能忘记记录。这个对象不能序列化给其他程序；可见open -g只是启动器，不能充当Chrome寿命证明。
+
+close先发布唯一Promise，再触发生命期abort，所以同步重入不执行两遍。leave、retained、锁、transport、frames、guard与每个unsubscribe失败后仍各自尝试其余本地释放；单错保留原对象，多错使用AggregateError，不改写原因。start、connection和ownedConnection原错与清理错误均保留。新启动的自有子进程即使移除客户端失败，也等待真实close。
+
+没有保留原子进程对象时，不再调用process.kill(owner.pid,SIGTERM/SIGKILL)。CDP请求后，仍活且显示名变化也报未确认，不能当旧进程已退出。直接持有的原ChildProcess关闭后不再追查旧数字PID，以免跟到替代进程。
+
+31项回归包含共享创建者先离开的TERM/KILL、同一私有目录的不同coordinator、交还用户后下次客户端继续、替换目录、端点与owner不符、同一活Node改comm、同步重入、每个释放步骤及组合出错、下载配置错误、真实Node拒绝Chrome参数后退出，以及初次元数据查询失败也清理自有测试子进程。最后两项用真实A/B子进程复现登记中途改引用：只A结束，B仍活；随后探针单独清理B。
+
+独立22组是17组原关闭故障、3组启动错误和2个登记分支。弱身份碰撞由私有ps替身模拟，不是一场真实PID复用；实际同PID改comm使用系统ps。独立创建的Node都等到真实close。独立未启动Chrome和UI；本代理已有网页112项检查包含私有无窗口Chrome读本地页、输入与提交，之后完整仓库检查再次执行。它们均不是可见Chrome的全程焦点证明。
+
+v35与v36完整检查各自通过，但尚未修登记中途换进程。最终成绩只用v37；不把中间版本算成当前版整套通过。首次TypeScript开发错误已修并留档。418份仓库文件在v37检查期间逐字节不变，之后仅改本文、TASKS.md、WEB-REQUEST-REVIEW.txt；运行代码与独立4文件指纹一致。
+
+本轮原生正式项0次；没有触碰锁定桌面、原Preview窗口或用户已有数据。只读查询确认原Preview出生身份仍活，旧控制器、guardian、监测器及防睡子进程均已不在，原图片SHA未变。原真实失败不因本轮代码改善改判。后续仍需完成同版本20项、30次热读和30次普通动作的速度样本。
+
+附录：本轮文件与证据路径
+产品源码：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/src/browser-clients.ts
+产品源码：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/src/web.ts
+回归：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/test/browser-clients.test.ts
+进程元数据源码未改：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/src/browser-process.ts
+独立最终报告：/tmp/mountains-browser-shared-close-final-independent-review-20261019.txt
+独立最终摘要：/tmp/mountains-browser-shared-close-final-independent-summary-20261019.json
+修前报告：/tmp/mountains-browser-shared-close-original-independent-review-20261019.txt
+登记错位修前真Node证据：/tmp/mountains-browser-lifetime-alias-fixed-v1-unsafe-20261019.json
+登记错位修后真Node证据：/tmp/mountains-browser-lifetime-alias-fixed-v2-confirmed-20261019.json
+根代理纯登记修前反例：/tmp/mountains-browser-lifetime-registration-race-original-20261019.json
+开发类型检查失败：/tmp/mountains-browser-close-development-failure-20261019.json
+本轮只读系统状态：/tmp/mountains-browser-close-final-runtime-state-20261019.json
+最终完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v37-20261019-bOtmle/result.json
+最终原始日志：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v37-20261019-bOtmle/check.log
+运行代码对比v34：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v37-20261019-bOtmle/followup-context.json
+最终临时防睡收尾：/tmp/mountains-full-check-awake-v37-20261019.json
+中间v35防睡与检查定位：/tmp/mountains-full-check-awake-v35-20261019.json
+中间v36防睡与检查定位：/tmp/mountains-full-check-awake-v36-20261019.json
+三份报告更新前原文：/tmp/mountains-formal-reports-before-v37-20261019.json
+仅三份报告更新：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v37-20261019-bOtmle/report-only-update.json
+
+
+附录：v39精确进程查询与收尾，正式20项仍未增加
+
+macOS进程查询改为本机只读Foundation/Darwin辅助程序。用sysctl读取boot UUID和kinfo_proc微秒出生，proc_pidpath夹在同一次出生检查中。规范身份含schema、pid、bootId、字符串startSeconds、startMicroseconds和真实执行路径；argv/comm改名不改身份，同代换执行程序会改变路径。查询失败、大小不完整、出生换代、路径不可读均保持unknown；只有OS明确不存在才返回null。它不是安全强制终止可见Chrome的原应用对象，也不能代替全程焦点记录。
+
+每个WebBrowser按需共用一个只读查询进程，在closeResources释放。outsideInputScope使查询不受业务输入租约的封口影响；所有分支都登记原查询，close先禁止新读并等原工作结束，迟到结果拒绝。macOS不再依赖PATH中的ps；非macOS仅保留绝对路径/bin/ps兼容，仍不能当精确出生证明。旧ps形状的owner记录不自动改写或接管，既有用户浏览器配置未读取。
+
+JsonHelper给该模块单独启用严格回复：坏JSON、错误请求号、同块多回复或尾随内容立即失败。闲置时的额外数据污染原读取程序，不另起一个洗掉错误；dispose实际收尾后也传播已知协议错误。旧JXA仍使用原宽松解析模式。通用辅助程序在spawn时保存原close Promise，先发布同一次停止Promise再通知取消；活进程与已exit进程都等待同一真实close。总截止用单调时钟，超时保留unverified，晚到close不改判。
+
+发行构建新增第3份通用二进制process-identity。两架构源码使用同一捕获字节并核指纹后发布，已有两份二进制未变化；没有在读取动作里运行swiftc。arm64/x86_64产物与codesign均核对，实际只在本机架构运行。kern.bootsessionuuid或ABI不支持时明确unknown，未宣称所有macOS版本实测通过。
+
+独立组合65项包含31项元数据、31项浏览器寿命和3项发布构建；随后最终元数据31项再查一次，旧生命周期从20项增至21项再查。它们有重复，不能相加冒充不同任务数。另有14组故障重放：5组坏协议、idle错误收尾、从活进程开始的真实关闭截止、非macOS生命周期纯模型，以及6组真实自身进程元数据。非macOS另由本代理在macOS上用真实ps重放兼容代码，不称Linux真机测试。独立最终13文件逐字节一致，自建程序均等待实际close。
+
+v38完整检查2452项中2422通过、29跳过、1失败；422文件未改。失败在旧夹具先写down事件、后写held状态，父测试可能夹在两步之间读取，出现ENOENT。原事件文件已按旧finally清理，原日志和源码快照仍保留。独立提取原/新真实program，只给held写入加150毫秒延迟，旧版稳定复现ENOENT，新版见down即已有true；两版最后都写入true且原子进程实际关闭。三个原模式测试正文逐字相同，仅交换状态写入与通知；新增一条延迟回归，没有改冻结任务、产品成功条件、等待次数或阈值。v38失败不改判；修后v39整库2453项中2424通过、29跳过、0失败。
+
+性能仅为自身Node进程的31次查询：第1次6.607毫秒单列，系统文件缓存已热；后30次中位0.095毫秒，95%耗时0.230毫秒。旧ps同类30次95%耗时1.780毫秒。原读取进程真实close耗时0.864毫秒。首次候选二进制直接运行的整条命令曾用0.594秒，包含Node启动，且在deadline协议修订之前；它不是最终版本的冷启动计时。没有清空系统缓存，不能宣称新装首次启动只要几毫秒，也不能把30个元数据样本用作30个screen_read或screen_act速度样本。
+
+原v37关闭反例和本轮四类独立坏行为均保留。开发时一次旧comm断言与新身份语义冲突、一次检查命令拼错、一次补丁格式被拒也留档。独立最初截止探针exit13，未观察到close；随后只读私有argv无匹配不等于观察到正常收尾，报告没有把它算成功。
+
+当前仍未补齐：可见或跨进程Chrome没有原对象时的可靠强制收尾；磁盘客户端登记仍只按PID判存活；账户类安全环境、原生下拉框、全程剪贴板恢复、默认原生输入路径及同版本20项/真正工具速度。桌面仍为原loginwindow，原Preview同出生实例仍活且图片SHA不变，没有输入或外部恢复。没有运行旧日常脚本或旧整套验收入口。
+
+附录：v39文件与证据
+源码：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/src/browser-process.ts
+只读本机实现：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/native/process-identity.swift
+发行产物：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/native/darwin-universal/process-identity 与 .json
+通用收尾：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/src/helper.ts
+浏览器接线：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/src/web.ts
+发布构建：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/scripts/build-computer-native.mjs
+回归：/Users/beluga383/Documents/ChatGPT/Mountains-github-preview1/packages/computer/test/browser-process.test.ts、browser-clients.test.ts、native-build.test.ts、helper-release-lifetime.test.ts
+最终独立报告：/tmp/mountains-browser-process-final-independent-review-20261019.txt
+独立源码/产物与原错误指纹：/tmp/mountains-browser-process-final-independent-summary-20261019.json
+旧新夹具独立复现：/tmp/mountains-helper-held-order-independent-20261019.json
+夹具旧源码：/tmp/mountains-helper-release-before-ready-order-20261019.test.ts.txt
+开发失败：/tmp/mountains-browser-process-development-failures-20261019.json
+旧查询计时：/tmp/mountains-browser-process-before-20261019.json
+中间版查询计时：/tmp/mountains-browser-process-after-20261019.json
+最终查询计时：/tmp/mountains-browser-process-after-final-20261019.json
+本轮桌面与原预览状态：/tmp/mountains-browser-process-final-desktop-state-20261019.json
+原v38完整失败：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v38-20261019-YPT3Wy/result.json 与 check.log
+最终完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v39-20261019-kAFwNs/result.json 与 check.log
+相对v37的11份变化：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v39-20261019-kAFwNs/runtime-changes-since-v37.json
+最终防睡实际退出：/tmp/mountains-full-check-awake-v39-20261019.json
+仅报告更新：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v39-20261019-kAFwNs/report-only-update.json
+更新前三份报告：/tmp/mountains-formal-reports-before-v39-20261019.json
+
+
+附录：v41候选检查，未增加正式通过项
+
+这轮新增三份文件：native/retained-application.swift、test/retained-application.test.ts、test/fixtures/retained-application-tests.swift。相对v39没有改生产入口、现有启动方式或发行二进制。候选目前借用测试目录的ProcessIdentity.swift编译；它尚不是可发行守护程序，不会让用户动作现场编译。
+
+第一次实际Swift编译成功，但21组函数报6处断言问题，原日志保留。修复请求异常处理、权限分类和正常退出顺序后，21组通过。v40完整自动检查2425通过、29跳过、0失败，但它尚未测试排队截止，所以不能证明该遗漏场景正确。独立探针在close入口第0毫秒请求关闭，MainActor排队到第100毫秒；原核心重开6毫秒期限，发出正常退出并误报成功。修后在close入口固定开始时间，同一探针一字未改，正常/强制请求均为0，报deadline。新增相同真实排队回归后22组通过，v41完整检查也通过。此前失败与反例没有覆盖或改判。
+
+真正已有的边界是：同一个关闭工作中，正常和强制退出各最多请求一次；请求返回true/false均不能单独确认退出；换代、未知、路径变更、已存在实例和撤销权限均不发不安全请求；日志错误保留失败但仍收尾原对象；普通请求抛错后继续核对并尝试原对象收尾；超时和迟到退出不能洗掉错误。所有运行端口仍是假对象，不能拿作真实AppKit属性、后台激活、关闭Chrome辅进程或失联清理证据。
+
+尚未实现的是：启动期间EOF/取消及迟到回调的完整控制；跨进程守护、私有socket、共享客户端与最后客户端关闭；真实主runloop状态推进；全部Chrome辅进程和端口退出；守护被强杀后的恢复。mayClose只是候选端口的许可检查，并未证明实际共享客户端或前台条件。外部回调永不返回时也不能凭这个核心强行终止它。独立报告明确保留这些限制。
+
+附录：v41文件与证据
+完整检查：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v41-20261019-iMLlVx/result.json 与 check.log
+检查前后425文件：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v41-20261019-iMLlVx/before.json 与 after.json
+相对v39三份新增文件：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v41-20261019-iMLlVx/runtime-changes-since-v39.json
+检查后只改三份报告：/var/folders/5w/kzcfl8s56hsgn85y586znpkc0000gn/T/mountains-web-witness-full-v41-20261019-iMLlVx/report-only-update-2.json；首次记录report-only-update.json保留
+旧报告备份：/tmp/mountains-formal-reports-before-v41-20261019.json
+初版候选：/tmp/mountains-retained-application-first-candidate-20261019.swift
+初版失败：/tmp/mountains-retained-application-first-test-20261019.log
+修后21组：/tmp/mountains-retained-application-second-test-20261019.log
+最终22组：/tmp/mountains-retained-application-third-test-20261019.log
+原排队反例：/tmp/mountains-retained-deadline-independent-unsafe-v3-20261019.json
+修后同一独立探针：/tmp/mountains-retained-deadline-fixed-independent-20261019.json
+最终独立审查：/tmp/mountains-retained-application-final-independent-review-20261019.txt
+独立源码和证据指纹：/tmp/mountains-retained-application-final-independent-summary-20261019.json
+本轮原Preview及图片只读核对：/tmp/mountains-retained-application-desktop-state-20261019.json
+最后只读前台核对：/tmp/mountains-retained-application-final-front-20261019.json
+短期电源断言已退出：/tmp/mountains-full-check-awake-v41-20261019.json
+候选SHA256：937043ca2e766da97149befc80d86ae4aa48d73eb049497e35d07a650df109f8
+外层测试SHA256：745b845906458c1e3196e0943a86e9c95462f9ab4de72e03ffb11a0fd405e4df
+Swift测试SHA256：85e66ab91587d4b2516cd3b122e37344d6c2d7a5ee7ddb2ae01816eaab76dfb1

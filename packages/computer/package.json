@@ -1,0 +1,16 @@
+{
+  "name": "@mountains/computer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./history": "./src/history.ts"
+  },
+  "dependencies": {
+    "@mountains/tools": "*",
+    "@crowecawcaw/xa11y": "0.15.2",
+    "ws": "8.21.3"
+  },
+  "license": "Apache-2.0"
+}

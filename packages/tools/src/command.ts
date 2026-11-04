@@ -39,7 +39,7 @@ const SENSITIVE_ENV = /(^|_)(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)
 /** 子进程环境：剔除 Key、令牌等敏感变量 */
 export function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out: NodeJS.ProcessEnv = {};
-	for (const [k, v] of Object.entries(env)) if (!SENSITIVE_ENV.test(k)) out[k] = v;
+	for (const [k, v] of Object.entries(env)) if (!SENSITIVE_ENV.test(k) && !/^NODE_CHANNEL_(FD|SERIALIZATION_MODE)$/i.test(k)) out[k] = v;
 	return out;
 }
 
@@ -53,6 +53,7 @@ const READ_ONLY_OPTIONS: Record<string, { short: string; flags?: string; values?
 	cat: { short: "AbEnsTuvet", flags: "--show-all --number-nonblank --show-ends --number --squeeze-blank --show-tabs --show-nonprinting --help --version" },
 	head: { short: "qvz", flags: "--quiet --silent --verbose --zero-terminated --help --version", values: "-c -n --bytes --lines" },
 	tail: { short: "fFqvz", flags: "--retry --quiet --silent --verbose --zero-terminated --help --version", values: "-c -n -s --bytes --lines --follow --pid --sleep-interval --max-unchanged-stats" },
+	du: { short: "aAbcDhHkLlmPSsx", flags: "--all --apparent-size --bytes --total --dereference-args --human-readable --si --dereference --count-links --no-dereference --separate-dirs --summarize --one-file-system --help --version", values: "-B -d --block-size --max-depth --exclude" },
 	wc: { short: "clLmw", flags: "--bytes --chars --lines --max-line-length --words --help --version", values: "--files0-from" },
 	grep: { short: "aAbBcEFGHhiILlnoPqRrsUVvwxyzZ", flags: "--extended-regexp --fixed-strings --basic-regexp --perl-regexp --ignore-case --no-ignore-case --invert-match --word-regexp --line-regexp --null-data --no-messages --no-filename --with-filename --line-number --byte-offset --text --binary --recursive --dereference-recursive --files-without-match --files-with-matches --count --only-matching --quiet --silent --line-buffered --null --help --version", values: "-e -f -m -A -B -C -D --regexp --file --max-count --after-context --before-context --context --binary-files --devices --directories --exclude --exclude-from --exclude-dir --include --label --color --colour --group-separator" },
 	rg: { short: "abcFhiIlLnNoPqsSUuvwx0", flags: "--no-config --fixed-strings --ignore-case --case-sensitive --smart-case --invert-match --word-regexp --line-regexp --text --binary --no-ignore --hidden --files --files-with-matches --files-without-match --count --count-matches --only-matching --quiet --line-number --no-line-number --with-filename --no-filename --heading --no-heading --line-buffered --null --null-data --multiline --multiline-dotall --no-unicode --help --version", values: "-e -f -g -t -T -m -A -B -C -E -M -r --max-columns --regexp --file --glob --iglob --type --type-not --max-count --after-context --before-context --context --max-depth --max-filesize --color --colors --sort --sortr --encoding --replace" },

@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "sourceSha256": "d40434cd39d274aaf6e48f3d95721bb1f8194480adab1cef4a38a692cca04ee9",
+  "projectSha256": "bc62bcc74138b93509e5f25b5d703d7257420c0df357b98bde875566f3e9f2ad",
+  "binarySha256": "34c50c04bd61d7fe72a40c0491bc468c93c4585a25bde55d3cc7495561666967",
+  "architectures": [
+    "arm64",
+    "x64"
+  ],
+  "framework": "net48"
+}

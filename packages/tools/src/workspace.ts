@@ -1,5 +1,7 @@
+import { isUtf8 } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { hasPathAncestor, pathAncestry } from "./path-identity.ts";
@@ -35,12 +37,25 @@ export function canonicalPath(path: string, allowMissing = false): string {
 	return resolve(real, relative(ancestor, absolute));
 }
 
-/** 工作区边界：所有路径必须落在根目录内，符号链接也不能越界。 */
+export function expandHomePath(path: string): string {
+	if (path === "~") return homedir();
+	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) return join(homedir(), path.slice(2));
+	return path;
+}
+
+export interface WorkspaceOptions {
+	/** Allow resolve() to access paths and symlinks outside root; relative paths still start at root, and ~ expands to homedir. */
+	allowOutside?: boolean;
+}
+
+/** 工作区边界：默认所有路径必须落在根目录内，符号链接也不能越界；Desktop 可开启 allowOutside 访问任意路径。 */
 export class Workspace {
 	readonly root: string;
+	readonly allowOutside: boolean;
 
-	constructor(root: string) {
+	constructor(root: string, options: WorkspaceOptions = {}) {
 		this.root = canonicalPath(root);
+		this.allowOutside = options.allowOutside === true;
 	}
 
 	private inside(abs: string): boolean {
@@ -62,28 +77,31 @@ export class Workspace {
 		return ancestry === "inside";
 	}
 
-	/** 把模型给出的路径解析为绝对路径并校验边界。forWrite 时允许文件不存在（但父目录必须在工作区内）。 */
+	/** 把模型给出的路径解析为绝对路径并校验边界。forWrite 时允许文件不存在（默认模式下父目录必须在工作区内）。 */
 	resolve(p: string, opts: { forWrite?: boolean } = {}): { abs: string; rel: string } {
 		if (typeof p !== "string" || !p.trim()) throw new ToolError("路径不能为空");
-		const candidate = isAbsolute(p) ? resolve(p) : resolve(this.root, p);
+		const target = this.allowOutside ? expandHomePath(p) : p;
+		const candidate = isAbsolute(target) ? resolve(target) : resolve(this.root, target);
 		let real: string;
 		if (existsSync(candidate)) {
 			real = canonicalPath(candidate);
-			if (!this.insideExisting(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
+			if (!this.allowOutside && !this.insideExisting(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
 		} else {
 			// 找到最近的已存在祖先，校验它的真实路径
 			const parent = existingAncestor(candidate);
 			const realParent = canonicalPath(parent);
-			if (!this.insideExisting(realParent)) throw new ToolError(`路径越出工作区：${p}`);
+			if (!this.allowOutside && !this.insideExisting(realParent)) throw new ToolError(`路径越出工作区：${p}`);
 			real = join(realParent, relative(parent, candidate));
 			if (!opts.forWrite) throw new ToolError(`文件不存在：${this.rel(real)}`);
 		}
-		if (!this.inside(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
+		if (!this.allowOutside && !this.inside(real)) throw new ToolError(`路径经符号链接越出工作区：${p}`);
 		return { abs: real, rel: this.rel(real) };
 	}
 
 	rel(abs: string): string {
-		const r = relative(this.root, canonicalPath(abs, true));
+		const canonical = canonicalPath(abs, true);
+		if (this.allowOutside && !this.inside(canonical)) return canonical;
+		const r = relative(this.root, canonical);
 		return r === "" ? "." : r.split(sep).join("/");
 	}
 }
@@ -182,13 +200,9 @@ export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const NEW_REF = /^blob_v2_([0-9a-f]{64})_([0-9a-f]{32})_(raw|shown)_([0-9a-f]{64})$/;
 const OLD_REF = /^blob_([0-9a-f]{16})$/;
 
+/** Validates the bytes in place (a leading BOM is valid), without decoding them into a string. */
 export function isValidUtf8(bytes: Uint8Array): boolean {
-	try {
-		new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-		return true;
-	} catch {
-		return false;
-	}
+	return isUtf8(bytes);
 }
 
 /** Explicit short-lived paging views retain authenticated bytes, never filesystem metadata.
@@ -347,8 +361,9 @@ export class BlobStore {
 	}
 
 	put(content: string | Uint8Array, options: BlobPutOptions = {}): string {
+		// Check the size before copying: an oversized archive must not first be duplicated in memory.
+		if ((typeof content === "string" ? Buffer.byteLength(content, "utf8") : content.byteLength) > MAX_ARCHIVE_BYTES) throw new ToolError(`归档超过 ${MAX_ARCHIVE_BYTES} 字节上限`);
 		const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
-		if (bytes.length > MAX_ARCHIVE_BYTES) throw new ToolError(`归档超过 ${MAX_ARCHIVE_BYTES} 字节上限`);
 		const kind = options.kind ?? (typeof content === "string" ? "shown" : "raw");
 		if (kind !== "raw" && kind !== "shown") throw new ToolError("归档类型无效");
 		const hash = sha256(bytes);

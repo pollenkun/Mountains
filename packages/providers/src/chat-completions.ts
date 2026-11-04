@@ -29,7 +29,7 @@ export interface ModelRequest {
 	system: string;
 	tools: ToolSpec[];
 	messages: Message[];
-	thinking: { enabled: boolean; effort: EffortSetting };
+	thinking: { enabled: boolean; effort: EffortSetting; budgetTokens?: number };
 	maxTokens: number;
 	/** user_id 会隔离 KV 缓存（DeepSeek 实测）；同一会话内不设或固定 */
 	userId?: string;
@@ -56,6 +56,8 @@ export interface ModelStreamHandlers {
 	exactInput?: ExactInputDispatch;
 	onText?: (delta: string) => void;
 	onThinking?: (delta: string) => void;
+	/** A tool call's arguments as they arrive, by its place in the reply. */
+	onToolArgs?: (index: number, name: string, delta: string) => void;
 	onFirstByte?: () => void;
 }
 
@@ -106,6 +108,10 @@ export interface ChatCompletionsAdapterOptions {
 	/** 可注入 fetch（测试或代理） */
 	fetch?: typeof globalThis.fetch;
 	timeoutMs?: number;
+	/** The model is not in the table but the user said it can think: the chosen tier goes out as reasoning_effort. */
+	namedEffort?: boolean;
+	/** Set when the user picked a wire. It wins over the guess from the model name. */
+	provider?: ProviderId;
 }
 
 export const EXACT_INPUT_DEFAULTS = Object.freeze({ maxBodyBytes: 8 * 1024 * 1024, countTimeoutMs: 15_000, method: "trusted-final-body" as const });
@@ -224,6 +230,7 @@ interface SseCapture {
 	model: string | null;
 	id: string | null;
 	toolCalls: Map<number, RawToolCall>;
+	onToolArgs?: ((index: number, name: string, delta: string) => void) | undefined;
 	/** Only a fully drained, understood tap may replace Pi's assembled arguments. */
 	complete: boolean;
 	reliable: boolean;
@@ -241,26 +248,27 @@ function providerFor(modelId: string): ProviderId {
  * Pi 内部的供应商名。助手消息与目标模型的供应商名、api、模型 ID 三者一致时，Pi 才把思考块作为 reasoning_content 回传，
  * 否则会把思考内容降级成普通文本（transform-messages.ts 的 isSameModel），所以两处必须用同一个函数。
  */
-function piProviderName(modelId: string): string {
-	const provider = providerFor(modelId);
-	return provider === "zhipu" ? "zai" : provider === "moonshot" ? "moonshotai-cn" : provider;
+function wireProviderName(provider: ProviderId): string {
+	return provider === "zhipu" ? "zai" : provider === "moonshot" ? "moonshotai-cn" : provider === "openai-compatible" ? "openai" : provider;
 }
 
 /** 能力表 → Pi 的模型描述。未登记的模型按供应商前缀推断。 */
-function piModel(modelId: string, baseUrl: string, effort: EffortSetting): PiModel<"openai-completions"> {
-	const cap: ModelCapabilities | undefined = capabilitiesFor(modelId);
-	const provider = providerFor(modelId);
+function piModel(modelId: string, baseUrl: string, effort: EffortSetting, forced?: ProviderId): PiModel<"openai-completions"> {
+	const inferred = providerFor(modelId);
+	const provider = forced ?? inferred;
+	const cap: ModelCapabilities | undefined = !forced || forced === inferred ? capabilitiesFor(modelId) : undefined;
 	const format = cap?.thinkingFormat ?? (provider === "zhipu" ? "zai" : provider === "moonshot" ? "always-on" : provider === "deepseek" ? "deepseek" : "none");
 	const sendsEffort = effort !== "default" && (cap ? cap.effortLevels.includes(effort) : format !== "always-on" && format !== "none");
 	return {
 		id: modelId,
 		name: cap?.displayName ?? modelId,
 		api: "openai-completions",
-		provider: piProviderName(modelId),
+		provider: wireProviderName(provider),
 		baseUrl,
 		reasoning: format !== "none",
 		thinkingLevelMap: THINKING_MAP,
-		input: ["text"],
+		// Images from tools reach only models that accept them; the library leaves them out otherwise.
+		input: [...(cap?.inputModalities ?? ["text"])],
 		// 费用由 Mountains 按官方价格自行计算，这里只填占位
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: cap?.contextWindow ?? 1048576,
@@ -291,8 +299,9 @@ function parseArgs(json: string): Record<string, unknown> {
 }
 
 /** Mountains 消息 → Pi 上下文。时间戳固定为 0，避免任何非确定内容。 */
-function toPiContext(req: ModelRequest): PiContext {
-	const passback = capabilitiesFor(req.model)?.requiresReasoningPassback ?? ["deepseek", "zhipu", "moonshot"].includes(providerFor(req.model));
+function toPiContext(req: ModelRequest, forced?: ProviderId): PiContext {
+	const provider = forced ?? providerFor(req.model);
+	const passback = (!forced || forced === providerFor(req.model)) && (capabilitiesFor(req.model)?.requiresReasoningPassback ?? ["deepseek", "zhipu", "moonshot"].includes(provider));
 	const messages: PiMessage[] = req.messages.map((m): PiMessage => {
 		if (m.role === "user") return { role: "user", content: m.content, timestamp: 0 };
 		if (m.role === "tool") {
@@ -300,7 +309,7 @@ function toPiContext(req: ModelRequest): PiContext {
 				role: "toolResult",
 				toolCallId: m.toolCallId,
 				toolName: m.name,
-				content: [{ type: "text", text: m.content }],
+				content: [{ type: "text", text: m.content }, ...(m.images ?? []).map(i => ({ type: "image", data: i.data, mimeType: i.mimeType }))],
 				isError: false,
 				timestamp: 0,
 			} as PiMessage;
@@ -313,7 +322,7 @@ function toPiContext(req: ModelRequest): PiContext {
 			role: "assistant",
 			content,
 			api: "openai-completions",
-			provider: piProviderName(req.model),
+			provider: wireProviderName(provider),
 			model: req.model,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 			stopReason: m.toolCalls.length ? "toolUse" : "stop",
@@ -355,8 +364,10 @@ function captureSseData(cap: SseCapture, data: string): void {
 		const cur = cap.toolCalls.get(tc.index) ?? { args: "" };
 		if (tc.id) cur.id = tc.id;
 		if (tc.function.name) cur.name = tc.function.name;
-		if (typeof tc.function.arguments === "string") cur.args += tc.function.arguments;
-		else if (tc.function.arguments !== undefined) cap.reliable = false;
+		if (typeof tc.function.arguments === "string") {
+			cur.args += tc.function.arguments;
+			if (tc.function.arguments) cap.onToolArgs?.(tc.index, cur.name ?? "", tc.function.arguments);
+		} else if (tc.function.arguments !== undefined) cap.reliable = false;
 		cap.toolCalls.set(tc.index, cur);
 	}
 }
@@ -453,6 +464,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			model: null,
 			id: null,
 			toolCalls: new Map(),
+			onToolArgs: handlers.onToolArgs,
 			complete: false,
 			reliable: true,
 			protocolError: false,
@@ -470,6 +482,18 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			catch { return localResponse(new ExactLocalError("REQUEST_SNAPSHOT_FAILED")); }
 		}
 		const baseFetch = this.options.fetch ?? globalThis.fetch;
+		// The adapter owns its request: an observer failure or a silent stream ends it, not only the caller's signal.
+		const own = new AbortController();
+		const signal = req.signal ? AbortSignal.any([req.signal, own.signal]) : own.signal;
+		// timeoutMs also bounds silence after the headers: each chunk restarts the clock.
+		const idleMs = this.options.timeoutMs;
+		let idleTimer: ReturnType<typeof setTimeout> | undefined;
+		let idleTimedOut = false;
+		const touch = () => {
+			if (!idleMs) return;
+			clearTimeout(idleTimer);
+			idleTimer = setTimeout(() => { idleTimedOut = true; own.abort(); }, idleMs);
+		};
 		const noteTransportFailure = (error: unknown) => {
 			if (!req.signal?.aborted && !(error instanceof Error && error.name === "AbortError")) transportFailed = true;
 		};
@@ -528,6 +552,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			httpStatus = res.status;
 			if (res.status === 429 || res.status >= 500) retryAfterMs = parseRetryAfter(res.headers);
 			if (!res.body) return res;
+			touch();
 			const [forPi, forTap] = res.body.tee();
 			// Observe errors at the SDK's read boundary, separately from parser or
 			// callback failures. The tap may continue draining after Pi rejects JSON.
@@ -541,26 +566,34 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 				},
 				cancel: (reason) => piReader.cancel(reason),
 			}, { highWaterMark: 0 });
-			const jsonRejection = res.status >= 400 && res.status < 500 && res.headers.get("content-type")?.includes("application/json");
+			// Any JSON error body (4xx or 5xx) may carry usage; read at most 1 MiB of it.
+			const jsonRejection = res.status >= 400 && res.headers.get("content-type")?.includes("application/json");
+			const jsonLimit = 1024 * 1024;
 			capture.done = (async () => {
 				const dec = new TextDecoder();
 				const parse = sseCaptureParser(capture);
 				let json = "";
 				const reader = forTap.getReader();
+				let jsonTooLarge = false;
 				for (;;) {
 					const { value, done } = await reader.read();
 					if (done) break;
+					touch();
 					if (capture.firstByteAt === null) {
 						capture.firstByteAt = Date.now();
 						handlers.onFirstByte?.();
 					}
 					const text = dec.decode(value, { stream: true });
-					if (jsonRejection) json += text; else parse(text);
+					if (!jsonRejection) parse(text);
+					else if (json.length + text.length <= jsonLimit) json += text;
+					else jsonTooLarge = true;
 				}
+				clearTimeout(idleTimer);
 				if (jsonRejection) {
 					// Error responses can carry usage too. Keep it as evidence instead
 					// of treating every non-SSE rejection as an absent invoice.
-					captureSseData(capture, json + dec.decode());
+					if (jsonTooLarge) capture.reliable = false;
+					else captureSseData(capture, json + dec.decode());
 				} else parse(dec.decode());
 				capture.complete = true;
 			})().catch(() => { capture.reliable = false; });
@@ -574,7 +607,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 			const cap = capabilitiesFor(req.model);
 			// Pi 只在 reasoningEffort 为真值时开启思考；"default" 时传 "high" 占位，是否真的发出 reasoning_effort 由 compat 决定
 			const piEffort: Effort = req.thinking.effort === "default" ? "high" : req.thinking.effort;
-			const s = piStream(piModel(req.model, this.options.baseUrl, req.thinking.effort), normalizeContext(toPiContext(req)), {
+			const s = piStream(piModel(req.model, this.options.baseUrl, req.thinking.effort, this.options.provider), normalizeContext(toPiContext(req, this.options.provider)), {
 				apiKey: this.options.apiKey,
 				fetch: tapFetch,
 				maxRetries: 0,
@@ -582,7 +615,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 				maxTokens: req.maxTokens,
 				...(req.thinking.enabled ? { reasoningEffort: piEffort } : {}),
 				...(cap?.fixedTemperature !== undefined ? { temperature: cap.fixedTemperature } : {}),
-				...(req.signal ? { signal: req.signal } : {}),
+				signal,
 				...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
 				onPayload: (payload: unknown) => {
 					const p = payload as Record<string, unknown> & { messages?: { role: string; tool_calls?: { id: string; function: { arguments: string } }[] }[]; user_id?: string };
@@ -591,6 +624,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 						for (const key of ["thinking", "reasoning_effort", "reasoning", "reasoning_content", "enable_thinking"]) delete p[key];
 						for (const msg of p.messages ?? []) for (const key of ["reasoning_content", "reasoning_details"]) delete (msg as unknown as Record<string, unknown>)[key];
 					}
+					if (this.options.namedEffort && req.thinking.enabled && req.thinking.effort !== "default") p.reasoning_effort = req.thinking.effort;
 					// 固定参数来自能力表。例如 Qwen Plus 必须显式关闭默认思考。
 					for (const [key, value] of Object.entries(cap?.requestExtras ?? {})) p[key] = value;
 					// 旧三家的回放保留已有参数；通用预设不能继承 DeepSeek user_id。
@@ -606,9 +640,15 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 					return p;
 				},
 			});
-			for await (const ev of s) {
-				if (ev.type === "text_delta") handlers.onText?.(ev.delta);
-				else if (ev.type === "thinking_delta") handlers.onThinking?.(ev.delta);
+			try {
+				for await (const ev of s) {
+					if (ev.type === "text_delta") handlers.onText?.(ev.delta);
+					else if (ev.type === "thinking_delta") handlers.onThinking?.(ev.delta);
+				}
+			} catch (error) {
+				// An observer that throws must not leave the request streaming (and charging) behind the caller's back.
+				own.abort();
+				throw error;
 			}
 			const final = await s.result();
 			let drainTimer: ReturnType<typeof setTimeout> | undefined;
@@ -628,8 +668,9 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 					toolCalls.push({ id: block.id, name: block.name, argumentsJson: raw?.args ?? JSON.stringify(block.arguments) });
 				}
 			}
-			const aborted = final.stopReason === "aborted";
-			const isError = final.stopReason === "error" || aborted;
+			// A silent stream ended by the idle clock is a retryable failure, not the user's cancellation.
+			const aborted = final.stopReason === "aborted" && !idleTimedOut;
+			const isError = final.stopReason === "error" || final.stopReason === "aborted";
 			if (exact && !transportAttempted) return localResponse(localFailure ?? new ExactLocalError(aborted ? "REQUEST_CANCELLED" : "REQUEST_BUILD_FAILED"));
 			const status: number | null = httpStatus;
 			const finishReason = capture.finishReason ?? final.rawStopReason ?? null;
@@ -659,13 +700,14 @@ export class ChatCompletionsAdapter implements ModelAdapter {
 				startedAt,
 				firstByteAt: capture.firstByteAt,
 				finishedAt,
-				error: isError ? { message: final.errorMessage ?? final.stopReason, retryable } : null,
+				error: isError ? idleTimedOut && !req.signal?.aborted ? { message: `模型响应流超过 ${idleMs} 毫秒没有新数据`, retryable: true }
+					: { message: final.errorMessage ?? final.stopReason, retryable } : null,
 				retryAfterMs,
 				aborted,
 			};
 		} catch (error) {
 			if (exact && !transportAttempted) return localResponse(localFailure ?? new ExactLocalError("REQUEST_BUILD_FAILED"));
 			throw error;
-		}
+		} finally { clearTimeout(idleTimer); }
 	}
 }

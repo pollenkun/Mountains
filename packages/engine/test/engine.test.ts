@@ -191,7 +191,8 @@ describe("AgentSession（脚本化模型，离线）", () => {
 			aborted: false,
 		};
 		const events: EngineEvent[] = [];
-		const { s, data } = session(ws, new ScriptedModelAdapter([failing, ...script()]), events);
+		// Unguarded accounting: a failed request without usage is charged conservatively and retried.
+		const { s, data } = session(ws, new ScriptedModelAdapter([failing, ...script()]), events, { requestGuard: false });
 		const r = await s.run("修复 calc.py 中 add 的 bug");
 		assert.equal(r.status, "completed");
 		const ledger = readFileSync(join(data, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -254,10 +255,10 @@ describe("AgentSession（脚本化模型，离线）", () => {
 });
 
 describe("重试与预算（与 OpenCode 1.18.32 对齐）", () => {
-	test("有 Retry-After 按它等待；否则 2、4、8、16、30 秒", () => {
+	test("有 Retry-After 按它等待；否则 2、4、8、16、30 秒；最多自动重试 10 次", () => {
 		assert.deepEqual([1, 2, 3, 4, 5].map((a) => retryDelayMs(DEFAULT_RETRY, a, null)), [2000, 4000, 8000, 16000, 30000]);
 		assert.equal(retryDelayMs(DEFAULT_RETRY, 1, 45_000), 45_000);
-		assert.equal(DEFAULT_RETRY.maxAttempts, 6);
+		assert.equal(DEFAULT_RETRY.maxAttempts, 11);
 	});
 	test("全局预算按币种累计；非美元计价必须显式给出上限", () => {
 		const dir = mkdtempSync(join(tmpdir(), "bg-"));
@@ -273,4 +274,12 @@ describe("重试与预算（与 OpenCode 1.18.32 对齐）", () => {
 		assert.equal(BudgetGuard.fromEnv(ledgerPath, "USD", { MOUNTAINS_BUDGET_USD: "7" }).globalLimit, 7);
 		assert.equal(BudgetGuard.fromEnv(ledgerPath, "USD", {}).globalLimit, 5);
 	});
+});
+
+test("retry delays stay within what a timer can hold (review B10)", () => {
+	assert.equal(retryDelayMs(DEFAULT_RETRY, 1, 2_147_483_647), 2_147_483_647);
+	assert.equal(retryDelayMs(DEFAULT_RETRY, 1, 2_147_483_648), 2_147_483_647);
+	assert.equal(retryDelayMs(DEFAULT_RETRY, 1, Number.POSITIVE_INFINITY), 2_147_483_647);
+	assert.equal(retryDelayMs({ maxAttempts: 80, baseDelayMs: 2000 }, 60, null), 2_147_483_647);
+	assert.equal(retryDelayMs(DEFAULT_RETRY, 1, -5), 0);
 });

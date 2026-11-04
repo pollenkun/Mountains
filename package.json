@@ -5,19 +5,25 @@
   "description": "A cache-aware coding agent engine and single-task CLI.",
   "workspaces": [
     "packages/*",
-    "apps/cli"
+    "apps/cli",
+    "apps/desktop"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --test-reporter=spec \"packages/*/test/**/*.test.ts\" \"apps/cli/test/**/*.test.ts\"",
+    "desktop:debug": "npm run debug -w apps/desktop",
+    "typecheck": "tsc -p tsconfig.json && tsc -p apps/desktop/tsconfig.json && tsc -p apps/desktop/tsconfig.renderer.json && tsc -p apps/desktop/tsconfig.preload.json",
+    "test": "node --test --test-reporter=spec \"packages/*/test/**/*.test.ts\" \"apps/cli/test/**/*.test.ts\" \"apps/desktop/test/**/*.test.ts\"",
     "test:native": "node --test --test-reporter=spec scripts/native-smoke.test.ts",
-    "test:scenarios": "node --test --test-reporter=spec packages/engine/test/practical-office-daily.test.ts packages/engine/test/practical-coding-recovery.test.ts apps/cli/test/practical-cli-workflows.test.ts",
+    "test:scenarios": "node --test --test-reporter=spec packages/engine/test/practical-office-daily.test.ts packages/engine/test/practical-coding-recovery.test.ts apps/cli/test/practical-cli-workflows.test.ts packages/computer/test/daily.test.ts",
     "check:deps": "node scripts/check-deps.ts",
     "check": "npm run typecheck && npm run check:deps && npm test",
-    "mountains": "node apps/cli/src/main.ts"
+    "mountains": "node apps/cli/src/main.ts",
+    "test:computer:macos": "node packages/computer/test/verify-macos.ts",
+    "test:computer:clipboard": "node packages/computer/test/verify-clipboard-macos.ts",
+    "build:computer:native": "node scripts/build-computer-native.mjs",
+    "build:computer:windows": "node scripts/build-windows-helper.mjs"
   },
   "devDependencies": {
     "@types/node": "22.19.19",

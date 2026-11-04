@@ -489,8 +489,9 @@ export function createEditTool(options: { batch?: boolean; lean?: boolean; appro
 					}
 					let count = 0;
 					for (let pos = original.indexOf(entry.oldText); pos !== -1; pos = original.indexOf(entry.oldText, pos + (batch ? 1 : entry.oldText.length))) {
-						count++;
-						spans.push({ start: pos, end: pos + entry.oldText.length, text: entry.newText, edit: index });
+						// Count every match for the message, but allocate spans only up to the expected number:
+						// a short oldText in a repetitive file must not allocate millions of objects just to fail.
+						if (++count <= entry.expectedMatches) spans.push({ start: pos, end: pos + entry.oldText.length, text: entry.newText, edit: index });
 					}
 					if (count !== entry.expectedMatches) return fail(count === 0 ? `在 ${rel} 中没有找到 oldText（需完全一致，包括缩进）` :
 						`oldText 在 ${rel} 中出现 ${count} 次，与 expectedMatches=${entry.expectedMatches} 不符；请提供更多上下文使其唯一`, { path: rel, matches: count, editIndex: index });
