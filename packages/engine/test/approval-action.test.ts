@@ -289,3 +289,22 @@ test("parameter accessors and non-JSON objects are never executed or accepted", 
 	assert.throws(() => snapshotApprovalAction(workspace, "command_run", { argv }), /extended argument arrays/);
 	assert.equal(calls, 0);
 });
+
+test("allowOutside workspace snapshots outside files, missing targets, and command cwd without enumerating shared roots", t => {
+	const { root } = fixture(t);
+	const outsideDir = mkdtempSync(join(tmpdir(), "mountains-approval-outside-"));
+	t.after(() => rmSync(outsideDir, { recursive: true, force: true }));
+	const existing = join(outsideDir, "existing.txt");
+	writeFileSync(existing, "hello outside\n");
+	const openWorkspace = new Workspace(root, { allowOutside: true });
+
+	const editSnap = snapshotApprovalAction(openWorkspace, "file_edit", { path: existing, oldText: "hello", newText: "hi" });
+	assert.equal(editSnap.risk, "workspace-write");
+	assert.ok(editSnap.bindings.some((b) => b.kind === "file" && Boolean(b.sha256)));
+
+	const writeSnap = snapshotApprovalAction(openWorkspace, "file_write", { path: join(outsideDir, "nested", "new.txt"), content: "created\n" });
+	assert.ok(writeSnap.bindings.some((b) => b.kind === "missing"));
+
+	const cmdSnap = snapshotApprovalAction(openWorkspace, "command_run", { argv: ["ls", "-la"], cwd: outsideDir });
+	assert.ok(cmdSnap.bindings.some((b) => b.role === "cwd" && b.kind === "directory"));
+});

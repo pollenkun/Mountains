@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { createSkillTool, discoverSkills, parseSkillFile, projectSkillRoots, skillInvocation, skillPermission, type ApprovalRequest, type SkillRoot, type ToolContext } from "../src/index.ts";
+import { createSkillTool, discoverSkills, parseSkillFile, projectSkillRoots, skillInvocation, skillMentions, skillPermission, type ApprovalRequest, type SkillRoot, type ToolContext } from "../src/index.ts";
 import { FileStateTracker, Workspace } from "../src/workspace.ts";
 
 function temp(t: TestContext): string {
@@ -44,8 +44,8 @@ test("discovery: earlier roots win a name, invalid skills are skipped with a rea
 	skill(user, "other-folder", "name: renamed\ndescription: Folder and name differ.");
 	writeFileSync(join(user, "loose.md"), "not a skill directory");
 	const roots: SkillRoot[] = [{ dir: project, source: "project" }, { dir: user, source: "user" }, { dir: join(dir, "missing"), source: "user" }];
-	const { skills, warnings } = discoverSkills(roots, [{ name: "make-theme", description: "Create a Mountains theme file.", body: "Theme steps." }]);
-	assert.deepEqual(skills.map(s => `${s.source}:${s.name}`), ["project:review", "user:renamed", "user:quiet", "builtin:make-theme"]);
+	const { skills, warnings } = discoverSkills(roots, [{ name: "format-note", description: "Format a note.", body: "Note steps." }]);
+	assert.deepEqual(skills.map(s => `${s.source}:${s.name}`), ["project:review", "user:renamed", "user:quiet", "builtin:format-note"]);
 	assert.equal(skills.find(s => s.name === "quiet")!.modelInvocable, false);
 	assert.ok(warnings.some(w => /重名/.test(w)));
 	assert.ok(warnings.some(w => /Bad_Name/.test(w)));
@@ -129,6 +129,18 @@ test("/name at the start of a message names a user-invocable skill; other text d
 	assert.equal(skillInvocation("/pdf-toolsX", skills), null);
 	assert.equal(skillInvocation("/auto-only now", skills), null);
 	assert.equal(skillInvocation("/pdf-tools", skills, { "pdf-*": "deny" }), null);
+});
+
+test("@name cites a skill anywhere in the message, and not an address or a denied skill", t => {
+	const dir = temp(t);
+	const root = join(dir, "skills");
+	skill(root, "pdf-tools", "name: pdf-tools\ndescription: PDFs.");
+	const { skills } = discoverSkills([{ dir: root, source: "user" }]);
+	assert.deepEqual(skillMentions("请用 @pdf-tools 读一下", skills).map(item => item.name), ["pdf-tools"]);
+	assert.deepEqual(skillMentions("@pdf-tools", skills).map(item => item.name), ["pdf-tools"]);
+	assert.deepEqual(skillMentions("写到 a@pdf-tools", skills), []);
+	assert.deepEqual(skillMentions("@missing", skills), []);
+	assert.deepEqual(skillMentions("@pdf-tools", skills, { "pdf-*": "deny" }), []);
 });
 
 test("frontmatter: quoted values may run over several indented lines and fold like YAML", () => {

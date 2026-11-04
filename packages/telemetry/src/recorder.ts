@@ -13,6 +13,7 @@ export type RecordKind =
 	| "approval.decision"
 	| "approval.request"
 	| "approval.usage"
+	| "approval.context"
 	| "meta"
 	| "user.input"
 	| "model.preflight"
@@ -37,13 +38,16 @@ export class Recorder {
 
 	constructor(path: string) {
 		this.path = path;
-		mkdirSync(dirname(path), { recursive: true });
+		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	}
 
 	write(kind: RecordKind, data: unknown): void {
-		const line: RecordLine = { kind, at: new Date().toISOString(), data: redactValue(data, this.secrets) };
-		appendFileSync(this.path, `${JSON.stringify(line)}\n`);
+		const line: RecordLine = { kind, at: new Date().toISOString(), data: this.sanitize(data) };
+		appendFileSync(this.path, `${JSON.stringify(line)}\n`, { mode: 0o600 });
 	}
+
+	/** Same immutable redaction policy as write(), so a private witness can commit to the stored bytes. */
+	sanitize(data: unknown): unknown { return redactValue(data, this.secrets); }
 }
 
 export function readRecording(path: string): RecordLine[] {

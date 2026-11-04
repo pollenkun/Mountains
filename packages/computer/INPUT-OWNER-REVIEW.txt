@@ -1,0 +1,37 @@
+文件记录与排队错误已修好，真实键鼠接入仍未完成
+
+输入由另一个辅助进程发出后，主进程现在重新读取原记录。它同时核对本轮编号和进程出生身份，不会把后来出现的新一轮认作自己。
+
+只重试原生程序明确证明“还没修改”的版本比较冲突。发送许可、实际开始和清理收据各自区分。丢回复不能重试输入，也不能假装已经清理。
+
+排队时间计入同一个五秒期限。到期或写入前取消，会永久禁止这条排队任务。旧请求仍正常完成，迟到任务不会再启动进程或写字节。已经尝试写入的请求仍等真实结果，不会被标成“未发送”。
+
+完整仓库检查与独立审查均通过
+
+npm run check：1889项中1860项通过，29项因平台或环境不符跳过，0项失败。检查前后9个固定源码及二进制文件均未改变。
+
+本代理和独立代理分别跑过29项相关检查，均通过。这29项已经包含在完整检查里，不能相加。实际Foundation JXA辅助进程直接写入自己的原生记录，主进程之后能继续核对和操作。
+
+独立代理保留了修前反例：旧请求阻塞约6.2秒，过期任务仍写入。修后当前任务约5秒先被拒绝；旧请求结束后，文件仍没有迟到写入。这份长阻塞使用真实通信程序与自建文件协议。
+
+真正原生文件组件也分别测了排队过期与取消。它本身等待文件锁最多500毫秒，所以这里使用30毫秒期限。放开旧请求后，由另一个原生客户端独立读回，均没有迟到记录。取消清理后可放锁；过期结果仍按未知保锁。
+
+这批不能作为桌面验收证据
+
+以上使用本轮自建文件、真实Foundation JXA和Node进程，没有桌面输入、账户写入或付费模型调用。测试耗时不是普通动作速度。
+
+真正负责键鼠、聚焦和剪贴板的JXA进程尚未接上这套记录。默认生产锁、全局存储迁移和完整退出清理也没有完成。日常脚本及20项正式验收入口继续关闭，不以组件检查代替真机通过。
+
+下一步先登记真实辅助进程，再允许它初始化界面和接收输入。每个动作必须由实际发送者记录开始和finally清理，不能由主进程代签。
+
+附录：证据与固定版本
+
+完整检查：/tmp/mountains-owner-refresh-full-check-20261019.log
+结果与源码摘要：/tmp/mountains-owner-refresh-full-check-result-20261019.json
+固定9文件：/tmp/mountains-owner-refresh-fixed-hashes-20261019.json
+独立报告：/tmp/mountains-owner-refresh-independent-20261019.txt
+独立29项：/tmp/mountains-owner-refresh-fixed-independent-tests-20261019.log
+原始排队反例：/tmp/mountains-owner-refresh-queued-deadline-independent-20261019.json
+修后排队探针：/tmp/mountains-owner-refresh-queued-deadline-fixed-independent-20261019.json
+原生排队探针：/tmp/mountains-owner-refresh-real-queue-fixed-independent-20261019.json
+正式接入设计：/tmp/mountains-jxa-claims-design-independent-20261019.txt

@@ -178,3 +178,12 @@ test("invalid arguments and cancellation never leak paths or read archives", asy
 	other.blobs.inspect = (ref) => { const result = original(ref); other.abort.abort(); return result; };
 	error(await other.tool.execute({ needle: "needle" }, other.ctx), "CANCELLED");
 });
+
+test("a search over an incomplete index does not claim to be complete", async () => {
+	const f = fixture();
+	f.index.record("needle here", { role: "user" });
+	const search = async () => success(await f.tool.execute({ needle: "absent" }, f.ctx)).complete;
+	assert.equal(await search(), true);
+	f.index.incomplete = true;
+	assert.equal(await search(), false);
+});

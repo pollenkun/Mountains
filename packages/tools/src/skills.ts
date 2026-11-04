@@ -18,9 +18,22 @@ export interface BuiltinSkill {
 	name: string;
 	description: string;
 	body: string;
+	/** Trusted built-in instructions kept outside compactable conversation history. */
+	persistentInstructions?: boolean;
 	tools?: ToolDefinition[];
+	/** The creating host awaits this after all skill calls finish, including cancellation. */
+	dispose?(): Promise<void>;
 	modelInvocable?: boolean;
 	userInvocable?: boolean;
+}
+
+/** Close every owned resource even if one cleanup fails. Hosts call this before process exit. */
+export async function disposeBuiltinSkills(skills: readonly BuiltinSkill[]): Promise<void> {
+	const errors: unknown[] = [];
+	for (const skill of [...new Set(skills)].reverse()) {
+		try { await skill.dispose?.(); } catch (error) { errors.push(error); }
+	}
+	if (errors.length) throw new AggregateError(errors, "skill resource cleanup failed");
 }
 
 export interface SkillEntry {
@@ -317,4 +330,17 @@ export function skillInvocation(text: string, skills: readonly SkillEntry[], per
 	if (!m) return null;
 	const entry = skills.find(s => s.name === m[1]);
 	return entry && entry.userInvocable && skillPermission(entry, permissions) !== "deny" ? entry : null;
+}
+
+/** `@name` cites a skill so its instructions are shown to the model. It can sit anywhere in the message. */
+export function skillMentions(text: string, skills: readonly SkillEntry[], permissions: Readonly<Record<string, SkillPermission>> = {}): SkillEntry[] {
+	const found: SkillEntry[] = [];
+	const seen = new Set<string>();
+	for (const match of text.matchAll(/(^|[\s([{])@([a-z0-9]+(?:-[a-z0-9]+)*)\b/g)) {
+		const entry = skills.find(skill => skill.name === match[2]);
+		if (!entry || !entry.userInvocable || skillPermission(entry, permissions) === "deny" || seen.has(entry.name)) continue;
+		seen.add(entry.name);
+		found.push(entry);
+	}
+	return found;
 }

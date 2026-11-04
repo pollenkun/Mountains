@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The disposable window test/windows-live.ts operates. Built on the Mac with the .NET SDK by
+       scripts/build-windows-witness.mjs (same conventions as native/windows-helper): the .NET Framework 4.8 every
+       Windows 10/11 already has, one AnyCPU exe (native on x64 and ARM64). The binary is never committed. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <AssemblyName>mountains-windows-witness</AssemblyName>
+    <RootNamespace>Mountains.Witness</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- One file: no .pdb, and no .exe.config (a v4 exe runs on the installed 4.8 runtime without one). -->
+    <DebugType>none</DebugType>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PathMap>$(MSBuildProjectDirectory)=/mountains/windows-witness</PathMap>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+</Project>

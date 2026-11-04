@@ -1,8 +1,9 @@
-import { createCommandTool } from "./command.ts";
+import { createCommandTool, DEFAULT_COMMAND_LIMITS } from "./command.ts";
 import { createEditTool, createReadTool, createWriteTool, DEFAULT_READ_LIMITS, type ReadLimits } from "./files.ts";
 import { createPlanTool } from "./plan.ts";
 import { createExpandTool } from "./recall.ts";
 import type { ToolDefinition } from "./types.ts";
+import { MAX_ARCHIVE_BYTES } from "./workspace.ts";
 
 export * from "./command.ts";
 export * from "./files.ts";
@@ -16,6 +17,7 @@ export * from "./session-index.ts";
 export * from "./session-search.ts";
 export * from "./task-note.ts";
 export * from "./skills.ts";
+export * from "./skill-install.ts";
 
 /** Tool options. The tool list itself is fixed for a session (tool definitions are part of the stable prefix). */
 export interface ToolOptions {
@@ -27,6 +29,8 @@ export interface ToolOptions {
 	approveFileWrites?: boolean;
 	/** Tool receipts leave out hashes and audit refs (they stay in details and the archive). */
 	leanOutput?: boolean;
+	/** command_run keeps at most this many output bytes in memory, then stops the command. Defaults to the archive limit (64 MiB). */
+	captureMaxBytes?: number;
 }
 
 /** Effective options are explicit so the engine records the actual tool surface. */
@@ -36,6 +40,7 @@ export function normalizeToolOptions(options: ToolOptions = {}): ToolOptions {
 		read: { ...DEFAULT_READ_LIMITS, ...options.read, dedupe: true, dedupeRanges: true },
 		leanOutput: true,
 		batchEdit: options.batchEdit ?? true, editFeedback: options.editFeedback ?? false, approveFileWrites: options.approveFileWrites === true,
+		captureMaxBytes: options.captureMaxBytes ?? MAX_ARCHIVE_BYTES,
 	};
 }
 
@@ -49,7 +54,9 @@ export function generalTools(given: ToolOptions = {}): ToolDefinition[] {
 		createReadTool(read, recovery),
 		createEditTool({ batch: options.batchEdit ?? false, lean: true, approveFileWrites: options.approveFileWrites === true, feedback: options.editFeedback === true }),
 		createWriteTool({ lean: true, approveFileWrites: options.approveFileWrites === true }),
-		createCommandTool(undefined, recovery),
+		// A command printing without end must not grow memory without end.
+		createCommandTool({ ...DEFAULT_COMMAND_LIMITS, captureMaxBytes: options.captureMaxBytes ?? MAX_ARCHIVE_BYTES }, recovery),
 		createExpandTool(),
 	];
 }
+export { createMemorySearchTool, type MemoryOptions } from "./memory.ts";

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Mountains Web QA</title>
+<meta name="qa-token" content="__TOKEN__">
+<style>
+body{font:17px system-ui;max-width:920px;margin:28px auto;color:#18212c;background:#f8fafc}
+nav{display:flex;gap:18px;flex-wrap:wrap}nav a{padding:8px;color:#164c8e}
+main{background:white;border:1px solid #c6d1dc;border-radius:8px;padding:26px;margin-top:22px}
+label{display:block;margin:14px 0}input,select,button{font:inherit;padding:7px;margin:4px}
+input[type=text]{min-width:260px}button{cursor:pointer}table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #c6d1dc;padding:9px;text-align:left}dialog{min-width:480px}
+[role=status]{white-space:pre-wrap;background:#eef4fa;padding:12px;min-height:24px}
+</style>
+<nav aria-label="QA pages"><a href="/form">Form</a><a href="/async">Async</a>
+<a href="/tasks">Tasks</a><a href="/records">Records</a><a href="/detail">Detail</a>
+<a href="/reconcile">Reconcile</a></nav>
+<main id="app"><h1>Loading QA page</h1></main>
+<p id="status" role="status" aria-live="polite">Loading</p>
+<script src="/app.js" defer></script>
+</html>

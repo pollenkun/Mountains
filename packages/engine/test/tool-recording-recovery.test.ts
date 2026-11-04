@@ -176,6 +176,25 @@ test("no-fault multiple writes retain the ordinary completed flow", async t => {
 	assertToolPairing(f.adapter.requests[1]!.messages); assert.doesNotThrow(() => f.agent.exportSnapshot());
 });
 
+for (const phase of ["tool.requested", "tool.completed", "run.completed"] as const) for (const persistent of [false, true]) {
+	test(`outward ${phase} log failure retains real results, persistent=${persistent}`, async t => {
+		let enabled = true, faulted = false;
+		const f = fixture(t, [reply([writeCall("first"), writeCall("second")]), reply(), reply()], { onEvent(event) {
+			if (enabled && event.type === phase && (persistent || !faulted)) { faulted = true; throw new Error("synthetic event file EIO"); }
+		} });
+		const summary = await f.agent.run("Keep completed writes if an outward event file fails.");
+		assert.equal(summary.status, "failed"); assert.match(summary.reason, /记录/);
+		const expected = phase === "tool.requested" ? [] : phase === "tool.completed" ? ["first"] : ["first", "second"];
+		assert.deepEqual(f.executed.map(item => item.id), expected);
+		assert.deepEqual(summary.filesChanged, expected.map(id => `${id}.txt`));
+		const results = toolResults(f.agent); assert.equal(results.length, 2);
+		for (let i = 0; i < expected.length; i++) assert.equal(results[i]!.content, f.executed[i]!.result.modelContent);
+		assert.doesNotThrow(() => f.agent.exportSnapshot()); enabled = false;
+		assert.equal((await f.agent.run("Continue without replaying completed writes.")).status, "completed");
+		assert.deepEqual(f.executed.map(item => item.id), expected);
+	});
+}
+
 for (const phase of ["hashes", "completed"] as const) test(`final ${phase} recording failure retains checkpoint and coherent completion`, async t => {
 	const f = fixture(t, [reply([writeCall("written")]), reply(), reply()]);
 	const restore = inject(f, (kind, data) => phase === "hashes" ? kind === "file.hashes" : kind === "engine.event" && (data as { type: string }).type === "run.completed");

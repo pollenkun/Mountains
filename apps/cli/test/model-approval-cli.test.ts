@@ -153,14 +153,14 @@ test("modelApproval configuration: omitted and null preserve the disabled baseli
 	assert.deepEqual(omitted.config.approval, explicit.config.approval);
 });
 
-test("requestGuard configuration: defaults off and hashes the effective value implied by model approval", () => {
+test("requestGuard configuration: defaults on and hashes the effective value implied by model approval", () => {
 	const omitted = config();
 	const disabled = config({ requestGuard: false, modelApproval: null });
 	const enabled = config({ requestGuard: true, modelApproval: null });
-	assert.equal(omitted.config.requestGuard, false);
+	assert.equal(omitted.config.requestGuard, true);
 	assert.equal(disabled.config.requestGuard, false);
 	assert.equal(enabled.config.requestGuard, true);
-	assert.equal(omitted.sha256, disabled.sha256);
+	assert.equal(omitted.sha256, enabled.sha256);
 	assert.notEqual(disabled.sha256, enabled.sha256);
 	const approval = { model: "deepseek-flash", maxCost: 0.2 };
 	const implicit = config({ modelApproval: approval });

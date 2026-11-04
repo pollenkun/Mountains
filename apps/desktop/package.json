@@ -1,0 +1,37 @@
+{
+  "name": "@mountains/desktop",
+  "private": true,
+  "version": "0.2.0-preview.2",
+  "type": "module",
+  "description": "Mountains desktop shell. The engine stays in the main process.",
+  "main": "dist/main.mjs",
+  "dependencies": {
+    "@mountains/checkpoints": "*",
+    "@mountains/cli": "*",
+    "@mountains/protocol": "*",
+    "@mountains/themes": "*",
+    "@mountains/tools": "*",
+    "electron-updater": "6.8.12",
+    "semver": "7.7.3"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/semver": "7.7.1",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "44.9.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "vite": "8.3.4"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "bundle": "node scripts/build.ts && node scripts/bundle-main.ts",
+    "pack": "npm run bundle && npx --yes electron-builder@26.18.0 --config electron-builder.yml --mac dir --publish never",
+    "debug": "node scripts/build.ts && env -u ELECTRON_RUN_AS_NODE electron scripts/debug.ts",
+    "release:mac": "npm run bundle && npx --yes electron-builder@26.18.0 --config electron-builder.yml --mac dmg --arm64 --publish never",
+    "release:windows": "npm run bundle && npx --yes electron-builder@26.18.0 --config electron-builder.yml --win nsis --arm64 --publish never",
+    "release:windows:x64": "npm run bundle && npx --yes electron-builder@26.18.0 --config electron-builder.yml --win nsis --x64 --publish never"
+  }
+}

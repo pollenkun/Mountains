@@ -6,3 +6,6 @@ coverage/
 .env.*
 *.tmp
 .mountains/
+.DS_Store
+apps/desktop/release/
+apps/desktop/release-*/

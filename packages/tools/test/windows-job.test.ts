@@ -61,7 +61,7 @@ function fixture(override: WindowsJobHost = {}) {
 	const launched = spawnWindowsJob("node", ["参数", "two words", "$() & | > ;", ""], { cwd, env: { Path: "C:\\tools", SystemRoot: "C:\\Windows" } }, host);
 	const data = async () => {
 		await payloadReady;
-		return JSON.parse(payload) as { source: string; program: string; commandLine: string; cwd: string; environment: string[]; pipe: string; token: string };
+		return JSON.parse(payload) as { source: string; cache: string; program: string; commandLine: string; cwd: string; environment: string[]; pipe: string; token: string };
 	};
 	const connect = async () => {
 		const request = await data();
@@ -118,6 +118,7 @@ test("Windows command data uses private stdin JSON, not PowerShell syntax or arg
 	assert.equal(request.commandLine, 'node 参数 "two words" "$() & | > ;" ""');
 	assert.equal(request.cwd, cwd);
 	assert.equal(request.source, WINDOWS_JOB_SOURCE);
+	assert.equal(request.cache, "", "no host LOCALAPPDATA, so the helper is compiled in memory");
 	assert.equal(invocation.address, `\\\\.\\pipe\\${request.pipe}`);
 	assert.deepEqual(socket.writes, [`${request.token}\tRUN\n`]);
 	// Fake output is deliberately untouched, including Chinese and nonzero exit 253.
@@ -330,4 +331,14 @@ test("native Windows minimal-environment bootstrap reports its initialization st
 	assert.equal(cleanup.confirmed, true, `${JSON.stringify(cleanup)}; stages=${JSON.stringify(stages)}`);
 	assert.equal(child.exitCode, 0);
 	assert.equal(stages.at(-1), "helper-stage:run-returned");
+});
+
+test("the compiled job helper is cached under the host's LOCALAPPDATA, keyed by source hash, never the target's", async () => {
+	const run = fixture({ inheritedEnvironment: { SystemRoot: "C:\\Windows", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" } });
+	const { request } = await run.connect();
+	assert.equal(request.cache, "C:\\Users\\me\\AppData\\Local\\Mountains\\windows-job");
+	const relative = fixture({ inheritedEnvironment: { SystemRoot: "C:\\Windows", LOCALAPPDATA: "AppData" } });
+	assert.equal((await relative.connect()).request.cache, "");
+	assert.ok(WINDOWS_JOB_BOOTSTRAP.indexOf("AssignProcessToJobObject($bootstrapJob") < WINDOWS_JOB_BOOTSTRAP.indexOf("-OutputAssembly"), "a cache miss compiles inside the wrapper Job too");
+	assert.match(WINDOWS_JOB_BOOTSTRAP, /if \(-not \$loaded\) \{ Add-Type -TypeDefinition \$p\.source -Language CSharp -ErrorAction Stop \}/);
 });

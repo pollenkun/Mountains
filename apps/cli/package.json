@@ -4,14 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./run-session": "./src/run-session.ts"
   },
   "dependencies": {
     "@mountains/protocol": "*",
     "@mountains/engine": "*",
     "@mountains/providers": "*",
     "@mountains/context": "*",
-    "@mountains/tools": "*"
+    "@mountains/tools": "*",
+    "@mountains/computer": "*"
   },
   "bin": {
     "mountains": "./src/main.ts"

@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import type { Usage } from "@mountains/protocol";
 import { redactValue } from "./redact.ts";
@@ -9,6 +10,8 @@ export interface LedgerRecord {
 	runId: string;
 	turnId: string;
 	requestId: string;
+	/** Provider response ID; absent in older ledgers, null when the adapter supplies none. */
+	responseId?: string | null;
 	attempt: number;
 	isRetry: boolean;
 	purpose: string;
@@ -34,16 +37,38 @@ export interface LedgerRecord {
 	firstChangedSegment: string | null;
 }
 
+/** Live append receipt, produced before callers can replace a ledger file. Contains no raw usage/text. */
+export interface ModelLedgerWitness {
+	readonly sessionId: string;
+	readonly runId: string;
+	readonly turnId: string;
+	readonly requestId: string;
+	readonly responseId: string | null;
+	readonly attempt: number;
+	readonly purpose: string;
+	readonly cost: number;
+	readonly currency: string;
+	readonly recordSha256: string;
+}
+
 export class Ledger {
 	readonly path: string;
+	private readonly onAppend: ((witness: ModelLedgerWitness) => void) | undefined;
 
-	constructor(path: string) {
+	constructor(path: string, onAppend?: (witness: ModelLedgerWitness) => void) {
 		this.path = path;
+		this.onAppend = onAppend;
 		mkdirSync(dirname(path), { recursive: true });
 	}
 
 	append(rec: LedgerRecord): void {
-		appendFileSync(this.path, `${JSON.stringify(redactValue(rec))}\n`);
+		const json = JSON.stringify(redactValue(rec));
+		appendFileSync(this.path, `${json}\n`);
+		if (this.onAppend) {
+			const { sessionId, runId, turnId, requestId, attempt, purpose, cost, currency } = rec;
+			this.onAppend(Object.freeze({ sessionId, runId, turnId, requestId, responseId: rec.responseId ?? null, attempt, purpose, cost, currency,
+				recordSha256: createHash("sha256").update(json).digest("hex") }));
+		}
 	}
 
 	read(): LedgerRecord[] {

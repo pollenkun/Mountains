@@ -257,9 +257,11 @@ export class BudgetGuard {
 		this.trackedRuns.add(runId);
 	}
 
-	check(worstCase: number, runLimit: number): void {
+	/** Without a reservation two checks can both pass before either records; prefer reserve(). With runId only that run counts against runLimit. */
+	check(worstCase: number, runLimit: number, runId?: string): void {
 		money(worstCase, "请求预留"); money(runLimit, "任务预算上限");
-		this.locked((state) => this.checkAmounts(state, worstCase, runLimit));
+		if (runId !== undefined) nameOf(runId, "运行编号");
+		this.locked((state) => this.checkAmounts(state, worstCase, runLimit, runId));
 	}
 
 	record(entry: { runId: string; requestId: string; amount: number; partial: boolean }): void {

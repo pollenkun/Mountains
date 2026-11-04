@@ -22,6 +22,14 @@ export const ToolCallSchema = Type.Object({
 });
 export type ToolCall = Static<typeof ToolCallSchema>;
 
+export const ImageSchema = Type.Object({
+	mimeType: Type.Union([Type.Literal("image/png"), Type.Literal("image/jpeg")]),
+	data: Type.String(),
+	width: Type.Number(),
+	height: Type.Number(),
+});
+export type ImageData = Static<typeof ImageSchema>;
+
 export const MessageSchema = Type.Union([
 	Type.Object({ role: Type.Literal("user"), content: Type.String() }),
 	Type.Object({
@@ -36,6 +44,8 @@ export const MessageSchema = Type.Union([
 		toolCallId: Type.String(),
 		name: Type.String(),
 		content: Type.String(),
+		/** Images from the tool (computer use), base64; sent only to models that accept image input. */
+		images: Type.Optional(Type.Array(ImageSchema)),
 	}),
 ]);
 export type Message = Static<typeof MessageSchema>;
@@ -93,8 +103,11 @@ const Base = {
 	priority: Type.Optional(Type.Literal("high")),
 };
 
+const RISK_LEVEL = Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]);
+
 function event<K extends string, P extends Record<string, TSchema>>(type: K, payload: P) {
-	return Type.Object({ ...Base, type: Type.Literal(type), ...payload });
+	/** `agent`: the team member this came from; the lead's own events have none. */
+	return Type.Object({ ...Base, agent: Type.Optional(Type.String()), type: Type.Literal(type), ...payload });
 }
 
 const SegmentSchema = Type.Object({
@@ -121,6 +134,8 @@ export const EngineEventSchema = Type.Union([
 		interjectionIds: Type.Optional(Type.Array(Type.String())),
 	}),
 	event("message.delta", { turnId: Type.String(), kind: Type.Union([Type.Literal("text"), Type.Literal("thinking")]), text: Type.String() }),
+	/** A file tool's arguments while the model writes them, for showing the change as it happens. Never recorded. */
+	event("tool.writing", { turnId: Type.String(), index: Type.Number(), tool: Type.String(), text: Type.String() }),
 	event("message.completed", {
 		turnId: Type.String(),
 		text: Type.String(),
@@ -141,6 +156,7 @@ export const EngineEventSchema = Type.Union([
 		risk: Type.Union([Type.Literal("read-only"), Type.Literal("workspace-write"), Type.Literal("network"), Type.Literal("dangerous")]),
 		explanation: Type.String(),
 		source: Type.Optional(Type.Union([Type.Literal("model"), Type.Literal("human")])),
+		level: Type.Optional(RISK_LEVEL),
 	}),
 	event("approval.resolved", {
 		toolCallId: Type.String(),
@@ -148,6 +164,7 @@ export const EngineEventSchema = Type.Union([
 		rule: Type.Union([Type.String(), Type.Null()]),
 		reason: Type.Optional(Type.String()),
 		actionHash: Type.Optional(Type.String()),
+		level: Type.Optional(RISK_LEVEL),
 	}),
 	event("tool.completed", {
 		turnId: Type.String(),
@@ -199,6 +216,8 @@ export const EngineEventSchema = Type.Union([
 		}),
 	}),
 	event("error", { message: Type.String(), retryable: Type.Boolean() }),
+	/** The user's message sent while a run was going, accepted for the run's next request. */
+	event("run.interjected", { id: Type.String(), text: Type.String() }),
 ]);
 export type EngineEvent = Static<typeof EngineEventSchema>;
 export type EngineEventType = EngineEvent["type"];
@@ -216,6 +235,8 @@ export const HIGH_PRIORITY_EVENTS: ReadonlySet<EngineEventType> = new Set([
 export const EngineCommandSchema = Type.Union([
 	Type.Object({ protocolVersion: Type.Literal(PROTOCOL_VERSION), type: Type.Literal("run.start"), task: Type.String() }),
 	Type.Object({ protocolVersion: Type.Literal(PROTOCOL_VERSION), type: Type.Literal("run.cancel") }),
+	/** A message for the run that is going: it reaches the model with its next request. */
+	Type.Object({ protocolVersion: Type.Literal(PROTOCOL_VERSION), type: Type.Literal("run.interject"), text: Type.String() }),
 	Type.Object({
 		protocolVersion: Type.Literal(PROTOCOL_VERSION),
 		type: Type.Literal("approval.respond"),

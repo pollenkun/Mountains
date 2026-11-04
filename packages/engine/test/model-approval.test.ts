@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ModelResponse } from "@mountains/providers";
-import { ApprovalInputError, buildApprovalRequest, parseApprovalDecision, type ApprovalEvidence, type ApprovalRequestOptions } from "../src/model-approval.ts";
+import { ApprovalInputError, buildApprovalRequest, parseApprovalDecision, parseApprovalStep, type ApprovalEvidence, type ApprovalRequestOptions } from "../src/model-approval.ts";
 
 // These fixtures check protocol handling, not a real model's authorization accuracy.
 const options: ApprovalRequestOptions = { model: "deepseek-flash", thinking: { enabled: false, effort: "high" }, maxTokens: 256, maxInputChars: 20_000 };
@@ -206,4 +206,71 @@ test("deny and ask require bounded reasons; 500 characters pass and longer or mu
 			assert.equal(parsed.decision, "ask"); assert.ok(parsed.reason && parsed.reason.length <= 500);
 		}
 	}
+});
+
+test("approval system prompt authorizes preparatory read-only inspection (like ls -la) for modifying or destructive requests", () => {
+	const input = evidence();
+	input.action = { id: "action-ls", tool: "command_run", arguments: { argv: ["ls", "-la"] }, cwd: "/Users/test/Mountains", risk: "workspace-write" };
+	input.userRequests = [{ id: "user-clear", text: "清空本地工作区" }];
+	const request = buildApprovalRequest(input, options);
+	assert.match(request.system, /Read-only inspection, directory listing/);
+	assert.match(request.system, /`ls`/);
+	assert.match(request.system, /never deny or ask merely because a preparatory read-only step has not yet performed the requested modification or deletion/);
+});
+
+test("need_context step parses valid context requests only when allowContextRequest is enabled, and rejects when disabled", () => {
+	const input = evidence();
+	input.context.omittedMessages = 20;
+	const requestWithContext = buildApprovalRequest(input, { ...options, allowContextRequest: true });
+	assert.match(requestWithContext.system, /need_context/);
+	const requestFinal = buildApprovalRequest(input, options);
+	assert.doesNotMatch(requestFinal.system, /need_context/);
+
+	const fullBlobRef = `blob_v2_${"a".repeat(64)}_${"b".repeat(32)}_shown_${"c".repeat(64)}`;
+	const stepJson = {
+		decision: "need_context",
+		requests: [
+			{ kind: "earlier_messages", count: 8 },
+			{ kind: "search_history", query: "清空" },
+			{ kind: "expand_blob", ref: fullBlobRef },
+			{ kind: "read_file", path: "README.md", startLine: 1, endLine: 40 },
+		],
+	};
+	const parsed = parseApprovalStep(response(stepJson), input, { allowContextRequest: true });
+	assert.equal(parsed.decision, "need_context");
+	if (parsed.decision === "need_context") {
+		assert.equal(parsed.requests.length, 4);
+		assert.deepEqual(parsed.requests[0], { kind: "earlier_messages", count: 8 });
+		assert.deepEqual(parsed.requests[2], { kind: "expand_blob", ref: fullBlobRef });
+		assert.deepEqual(parsed.requests[3], { kind: "read_file", path: "README.md", startLine: 1, endLine: 40 });
+	}
+	assert.equal(parseApprovalStep(response(stepJson), input, { allowContextRequest: false }).decision, "ask");
+});
+
+test("the lenient review needs no citation, carries a risk, and still refuses anything else", () => {
+	const lenient = { lenient: true };
+	assert.deepEqual(parseApprovalStep(response({ decision: "allow", risk: "medium" }), evidence(), lenient), { decision: "allow", risk: "medium" });
+	assert.deepEqual(parseApprovalStep(response({ decision: "ask", risk: "high", reason: "强推会覆盖远端" }), evidence(), lenient), { decision: "ask", risk: "high", reason: "强推会覆盖远端" });
+	assert.deepEqual(parseApprovalStep(response({ decision: "allow", risk: "low", reason: "好的" }), evidence(), lenient), { decision: "allow", risk: "low" });
+	const fenced = response({}); fenced.message.content = '```json\n{"decision":"allow","risk":"low"}\n```';
+	assert.deepEqual(parseApprovalStep(fenced, evidence(), lenient), { decision: "allow", risk: "low" });
+	assert.equal(parseApprovalStep(response({ decision: "maybe" }), evidence(), lenient).decision, "ask");
+	assert.equal(parseApprovalStep(response({ decision: "allow", risk: "medium" }), evidence()).decision, "ask");
+	assert.match(packet(evidence(), lenient).request.system, /Default to allow/);
+});
+
+test("the lenient packet stays small in a long conversation, and keeps what changes at the end", () => {
+	const long = evidence();
+	long.userRequests = Array.from({ length: 400 }, (_, i) => ({ id: `user-${i}`, text: `第 ${i} 条消息：${"内容".repeat(120)}` }));
+	long.context = { system: "THE MAIN SYSTEM PROMPT", messages: [], omittedMessages: 500 };
+	assert.throws(() => packet(long), /超过输入上限|APPROVAL/);
+	const { request, data } = packet(long, { lenient: true });
+	assert.equal(request.system.includes("omittedRequests"), true);
+	assert.equal(JSON.stringify(data).includes("THE MAIN SYSTEM PROMPT"), false);
+	assert.equal(data.userRequests.at(-1).id, "user-399");
+	assert.equal(data.omittedRequests, 400 - data.userRequests.length);
+	assert.deepEqual(Object.keys(data), ["userRequests", "omittedRequests", "context", "action"]);
+	const huge = evidence();
+	huge.userRequests = [{ id: "user-1", text: "长".repeat(200_000) }];
+	assert.ok(JSON.stringify(packet(huge, { lenient: true }).data.userRequests[0].text).length < 40_000);
 });

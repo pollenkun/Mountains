@@ -357,7 +357,32 @@ try {
     } finally {
         $inputReader.Dispose()
     }
-    Add-Type -TypeDefinition $p.source -Language CSharp -ErrorAction Stop
+    # Starting the C# compiler for every command costs a few hundred milliseconds when idle
+    # and seconds under antivirus load. A compiled copy keyed by the source hash is loaded
+    # instead; any problem with it falls back to compiling in memory as before.
+    $loaded = $false
+    if ($p.cache) {
+        $dll = $null
+        try {
+            $hash = [Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.UTF8Encoding]::new($false).GetBytes([string]$p.source))
+            $dll = [System.IO.Path]::Combine([string]$p.cache, 'job-' + [BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant() + '.dll')
+            if (-not [System.IO.File]::Exists($dll)) {
+                [void][System.IO.Directory]::CreateDirectory([string]$p.cache)
+                $partial = $dll + '.' + $PID + '.tmp'
+                try {
+                    Add-Type -TypeDefinition $p.source -Language CSharp -OutputAssembly $partial -OutputType Library -ErrorAction Stop
+                    [System.IO.File]::Move($partial, $dll)
+                } catch { } finally { if ([System.IO.File]::Exists($partial)) { [System.IO.File]::Delete($partial) } }
+            }
+            if ([System.IO.File]::Exists($dll)) {
+                [void][Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes($dll))
+                $loaded = ('MountainsWindowsJob' -as [type]) -ne $null
+            }
+        } catch {
+            if ($dll) { try { [System.IO.File]::Delete($dll) } catch { } }
+        }
+    }
+    if (-not $loaded) { Add-Type -TypeDefinition $p.source -Language CSharp -ErrorAction Stop }
     $code = [MountainsWindowsJob]::Run([string]$p.program,[string]$p.commandLine,[string]$p.cwd,[string[]]$p.environment,[string]$p.pipe,[string]$p.token)
     exit $code
 } catch {
@@ -398,6 +423,9 @@ export function spawnWindowsJob(program: string, argv: string[], options: { cwd:
 		throw new Error("Windows 系统目录无效，无法安全启动进程管理器");
 	}
 	const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	// Where the compiled job helper is kept, from the host's own environment, never the target's.
+	const localAppData = host.inheritedEnvironment ? envValue(host.inheritedEnvironment, "LOCALAPPDATA") : process.env.LOCALAPPDATA;
+	const cache = localAppData && /^[A-Za-z]:[\\/]/.test(localAppData) && !localAppData.includes("\0") ? win32.join(localAppData, "Mountains", "windows-job") : "";
 	if (!(host.isFile ?? fileExists)(powershell)) throw new Error("找不到 Windows 系统自带的 PowerShell，命令未执行");
 	const wrapperEnvironment: NodeJS.ProcessEnv = {};
 	for (const [name, value] of Object.entries(effectiveEnvironment)) if (name.toUpperCase() !== "SYSTEMROOT") wrapperEnvironment[name] = value;
@@ -491,7 +519,7 @@ export function spawnWindowsJob(program: string, argv: string[], options: { cwd:
 	server.on("error", () => forceStop("Windows 无法建立私有进程控制连接，命令未正常开始"));
 	server.listen(`\\\\.\\pipe\\${pipe}`, () => {
 		if (!child || closed) return;
-		child.stdin.end(JSON.stringify({ source: WINDOWS_JOB_SOURCE, program: executable, commandLine, cwd: options.cwd, environment, pipe, token }), "utf8");
+		child.stdin.end(JSON.stringify({ source: WINDOWS_JOB_SOURCE, cache, program: executable, commandLine, cwd: options.cwd, environment, pipe, token }), "utf8");
 	});
 	try {
 		child = (host.spawn ?? spawn)(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_JOB_BOOTSTRAP, "utf16le").toString("base64")], {

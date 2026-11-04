@@ -25,7 +25,7 @@ test("read-only risk is argv-aware and unknown options and shell syntax stay con
 	for (const input of ["find . -delete", "find . -exec touch marker +", "find -- . -delete", "git branch -D feature", "git diff --output=marker", "git diff", "rg needle", "rg -- --no-config", "rg -e --no-config needle", "rg --no-config --pre=touch needle", "rg --no-config -z needle", "file -C -m magic", "file --preserve-date sample", "tree -o marker", "echo $(touch marker)", "echo `touch marker`", "echo ok\ntouch marker", "echo ${value:=x}", "ls >/tmp/marker", "ls; touch marker", "ls && touch marker", "ls $(echo x)", "./ls", "__proto__"]) {
 		assert.notEqual(classifyRisk(input), "read-only", input);
 	}
-	for (const input of ["ls -la", "cat -- -strange.txt", "head -n 5 file", "tail --lines=5 file", "grep -n needle file", "rg --no-config --fixed-strings needle file", "find . -type f -name sample -print", "pwd -P", "echo literal"]) assert.equal(classifyRisk(input), "read-only", input);
+	for (const input of ["du -sh .", "ls -la", "cat -- -strange.txt", "head -n 5 file", "tail --lines=5 file", "grep -n needle file", "rg --no-config --fixed-strings needle file", "find . -type f -name sample -print", "pwd -P", "echo literal"]) assert.equal(classifyRisk(input), "read-only", input);
 	assert.equal(classifyRisk(["echo", "$(touch marker)", ";", "literal\ntext"]), "read-only", "literal argv does not undergo shell expansion");
 	assert.equal(classifyRisk(["find", ".", "-name", "-delete"]), "read-only", "a value is not an option");
 	for (const program of ["ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "stat", "file", "tree", "diff"]) {

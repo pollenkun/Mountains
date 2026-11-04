@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { devNull } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -47,9 +47,20 @@ export interface RestoreResult {
 	conflicts: { path: string; expected: string; actual: string | null }[];
 }
 
+/** What a newly created file gets under the current umask. */
+function defaultMode(executable: boolean): number {
+	return (executable ? 0o777 : 0o666) & ~process.umask();
+}
+
+/** Hashed in 1 MiB steps: a file of any size the snapshot accepted can also be checked on restore. */
 export function fileSha256(abs: string): string | null {
 	if (!existsSync(abs)) return null;
-	return createHash("sha256").update(readFileSync(abs)).digest("hex");
+	const hash = createHash("sha256"), chunk = Buffer.allocUnsafe(1024 * 1024);
+	const fd = openSync(abs, "r");
+	try {
+		for (let n = readSync(fd, chunk); n > 0; n = readSync(fd, chunk)) hash.update(chunk.subarray(0, n));
+	} finally { closeSync(fd); }
+	return hash.digest("hex");
 }
 
 export class ShadowCheckpoints {
@@ -66,9 +77,26 @@ export class ShadowCheckpoints {
 		// Each instance owns its staging index; concurrent sessions share only Git objects.
 		this.indexFile = join(this.gitDir, `mountains-index-${randomUUID()}`);
 		if (!existsSync(join(this.gitDir, "HEAD"))) {
-			mkdirSync(this.gitDir, { recursive: true });
+			mkdirSync(this.gitDir, { recursive: true, mode: 0o700 });
 			execFileSync("git", ["init", "-q", "--bare", this.gitDir]);
 		}
+		// Snapshots hold private files verbatim, ignored ones included: only the owner may enter.
+		if (process.platform !== "win32" && statSync(this.gitDir).uid === process.getuid?.()) chmodSync(this.gitDir, 0o700);
+	}
+
+	/** Permissions a tree's files had beyond what Git keeps (Git records only the execute bit). */
+	private modesPath(tree: string): string { return join(this.gitDir, "mountains-modes", tree); }
+
+	private saveModes(tree: string, modes: Record<string, number>): void {
+		if (process.platform === "win32") return;
+		mkdirSync(join(this.gitDir, "mountains-modes"), { recursive: true, mode: 0o700 });
+		writeFileSync(this.modesPath(tree), JSON.stringify(modes), { mode: 0o600 });
+	}
+
+	/** Null for a tree saved before modes were kept: restore then uses the default permissions. */
+	private savedModes(tree: string): Record<string, number> | null {
+		try { return JSON.parse(readFileSync(this.modesPath(tree), "utf8")) as Record<string, number>; }
+		catch { return null; }
 	}
 
 	private git(args: string[], input?: string): string {
@@ -143,8 +171,11 @@ export class ShadowCheckpoints {
 		}
 		return this.withIndex(() => {
 			const hashes = files.length ? this.git(["hash-object", "-w", "--stdin-paths", "--no-filters"], `${files.map(quoteGitPath).join("\n")}\n`).trim().split("\n") : [];
+			const modes: Record<string, number> = {};
 			const info = files.map((f, i) => {
-				const mode = statSync(join(this.workspace, f)).mode & 0o111 ? "100755" : "100644";
+				const st = statSync(join(this.workspace, f));
+				if ((st.mode & 0o777) !== defaultMode(!!(st.mode & 0o111))) modes[f] = st.mode & 0o777;
+				const mode = st.mode & 0o111 ? "100755" : "100644";
 				return `${mode} ${hashes[i]}\t${f}`;
 			});
 			// A missing index starts empty. update-index builds the full nonempty
@@ -152,6 +183,7 @@ export class ShadowCheckpoints {
 			if (info.length) this.git(["update-index", "-z", "--index-info"], `${info.join("\0")}\0`);
 			else this.git(["read-tree", "--empty"]);
 			const tree = this.git(["write-tree"]).trim();
+			this.saveModes(tree, modes);
 			return { tree, files: files.length, skippedSymlinks, durationMs: Date.now() - t0 };
 		});
 	}
@@ -174,18 +206,32 @@ export class ShadowCheckpoints {
 		return this.withIndex(() => {
 			this.git(["read-tree", tree]);
 			this.git(["update-index", "-z", "--index-info"], `${mode} ${hash}\t${p}\0`);
-			return this.git(["write-tree"]).trim();
+			const next = this.git(["write-tree"]).trim();
+			const modes = this.savedModes(tree);
+			if (modes) {
+				if ((st.mode & 0o777) !== defaultMode(!!(st.mode & 0o111))) modes[p] = st.mode & 0o777;
+				this.saveModes(next, modes);
+			}
+			return next;
 		});
 	}
 
-	/** 快照中某路径的内容；不在快照中返回 null */
-	private blobAt(tree: string, path: string): { content: Buffer; executable: boolean } | null {
+	/** 快照中某路径的对象；不在快照中返回 null */
+	private blobAt(tree: string, path: string): { sha: string; executable: boolean } | null {
 		const line = this.git(["--literal-pathspecs", "ls-tree", "-z", tree, "--", gitPath(path)]);
 		if (!line) return null;
 		const [mode, , sha] = line.slice(0, line.indexOf("\t")).split(" ");
 		if (!sha) return null;
-		const content = execFileSync("git", [...GIT_CFG, "cat-file", "blob", sha], { env: { ...process.env, GIT_DIR: this.gitDir }, maxBuffer: 256 * 1024 * 1024 });
-		return { content, executable: mode === "100755" };
+		return { sha, executable: mode === "100755" };
+	}
+
+	/** Streams a blob straight into a new file, so restoring never holds the whole file in memory. */
+	private writeBlob(sha: string, file: string): void {
+		const fd = openSync(file, "wx", 0o600);
+		try {
+			const r = spawnSync("git", [...GIT_CFG, "cat-file", "blob", sha], { env: { ...process.env, GIT_DIR: this.gitDir }, stdio: ["ignore", fd, "pipe"], encoding: "utf8" });
+			if (r.status !== 0) throw new Error(`git cat-file 失败：${r.error?.message ?? r.stderr}`);
+		} finally { closeSync(fd); }
 	}
 
 	/** 两个快照之间变化的路径（A=新增 M=修改 D=删除） */
@@ -195,6 +241,22 @@ export class ShadowCheckpoints {
 		const res: { status: string; path: string }[] = [];
 		for (let i = 0; i + 1 < parts.length; i += 2) res.push({ status: parts[i] ?? "", path: parts[i + 1] ?? "" });
 		return res;
+	}
+
+	/** The unified diff of the given paths between two snapshots, for showing the changes. */
+	diff(fromTree: string, toTree: string, paths: string[]): string {
+		if (!paths.length) return "";
+		return this.git(["--literal-pathspecs", "diff-tree", "-p", "-r", "--no-renames", "--no-color", fromTree, toTree, "--", ...paths.map(gitPath)]);
+	}
+
+	/** Lines added and removed per path between two snapshots; a binary file counts as null. */
+	lineCounts(fromTree: string, toTree: string, paths: string[]): { path: string; added: number | null; removed: number | null }[] {
+		if (!paths.length) return [];
+		const out = this.git(["--literal-pathspecs", "diff-tree", "--numstat", "-r", "--no-renames", "-z", fromTree, toTree, "--", ...paths.map(gitPath)]);
+		return out.split("\0").filter(Boolean).map((line) => {
+			const [added, removed, ...rest] = line.split("\t");
+			return { path: rest.join("\t"), added: added === "-" ? null : Number(added), removed: removed === "-" ? null : Number(removed) };
+		});
 	}
 
 	/**
@@ -229,11 +291,11 @@ export class ShadowCheckpoints {
 			try {
 				// Prepare the whole replacement first; an I/O failure must not truncate
 				// the current file. Rename also avoids mutating another hard-link name.
-				writeFileSync(temp, blob.content, { flag: "wx", mode: 0o600 });
+				this.writeBlob(blob.sha, temp);
 				if (process.platform !== "win32" && existingMode !== null) {
 					const execute = (existingMode & 0o111) || ((existingMode & 0o444) >> 2);
 					chmodSync(temp, (existingMode & 0o666) | (blob.executable ? execute : 0));
-				} else chmodSync(temp, (blob.executable ? 0o777 : 0o666) & ~process.umask());
+				} else chmodSync(temp, this.savedModes(tree)?.[gitPath(p)] ?? defaultMode(blob.executable));
 				this.checkedPath(p);
 				const latest = fileSha256(abs);
 				if (latest !== actual) {

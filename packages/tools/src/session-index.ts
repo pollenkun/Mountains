@@ -79,6 +79,8 @@ export class SessionArchiveIndex {
 	private readonly entries: Entry[] = [];
 	private readonly secret = randomBytes(32);
 	private totalBytes = 0;
+	/** Some visible text could not be indexed, so finding nothing does not mean it was never said. */
+	incomplete = false;
 	constructor(blobs: BlobStore) { this.blobs = blobs; }
 
 	/** Call only for visible message bodies. Unknown/hidden-reasoning fields are rejected. */
@@ -146,7 +148,7 @@ export class SessionArchiveIndex {
 		const advance = () => { position.entry++; position.offset = 0; };
 		const result = (): SessionSearchSuccess => ({
 			ok: true, matches, scannedBytes, checkedRecords, unavailableRecords,
-			complete: position.entry >= position.snapshot && unavailableRecords === 0, limits: [...limits],
+			complete: position.entry >= position.snapshot && unavailableRecords === 0 && !this.incomplete, limits: [...limits],
 			...(position.entry < position.snapshot ? { nextCursor: this.cursor(position, queryHash) } : {}),
 		});
 		while (position.entry < position.snapshot) {

@@ -224,7 +224,7 @@ test("pending input is explicitly undelivered when a turn limit prevents another
 	const running = f.agent.run("Original"); await entered.pending;
 	assert.equal(f.agent.interject("Cannot send within this limit").accepted, true); release.release();
 	const result = await running;
-	assert.equal(result.status, "limit"); assert.match(result.reason, /插话未送达/);
+	assert.equal(result.status, "limit"); assert.match(result.reason, /跟进未送达/);
 	assert.equal(f.scripted.requests.length, 1);
 	assert.equal(f.agent.builder.plan().messages.some((m) => m.content === "Cannot send within this limit"), false);
 });

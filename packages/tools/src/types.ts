@@ -25,6 +25,8 @@ export interface WriteRecord {
 }
 
 export interface ToolResult {
+	/** Host control, accepted only from a trusted tool declaring canHandoff. */
+	control?: {kind:"handoff";message:string};
 	ok: boolean;
 	/** 发给模型的内容 */
 	modelContent: string;
@@ -37,6 +39,16 @@ export interface ToolResult {
 	writes?: WriteRecord[];
 	/** 不可变的完整原始字节引用。与驱动另存的模型展示文字引用不同。 */
 	fullOutputRef?: string;
+	/** Images for the model (computer use); sent only to models that accept image input. */
+	images?: ToolImage[];
+}
+
+export interface ToolImage {
+	mimeType: "image/png" | "image/jpeg";
+	/** Base64-encoded bytes. */
+	data: string;
+	width: number;
+	height: number;
 }
 
 export interface ToolContext {
@@ -63,5 +75,6 @@ export interface ToolDefinition {
 	description: string;
 	parameters: Record<string, unknown>;
 	readOnly: boolean;
+	canHandoff?:boolean;
 	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }

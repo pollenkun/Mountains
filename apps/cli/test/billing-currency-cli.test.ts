@@ -14,8 +14,8 @@ import type { LedgerRecord } from "@mountains/telemetry";
 import { DEFAULT_CONFIG, loadConfig } from "../src/config.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
-// The default configuration's hash: a change here means the default configuration changed.
-const DEFAULT_SHA = "4e9ed4dde28b2524f4b70ae9caa9dbb22337f47a4ba9823f7f7197cf148e5028";
+// The default configuration's hash: a change here means the default configuration changed (2026-10-24: requestGuard defaults on).
+const DEFAULT_SHA = "fcb15ff8cb7f2e9a9dfd0246013470ac408766a59dc342e53fb15eab4bfdcbbd";
 const OPTIONAL_FIELDS = ["billingCurrency"] as const;
 const DEEPSEEK_USAGE: RawUsage = { prompt_tokens: 1000, completion_tokens: 20, total_tokens: 1020,
 	prompt_cache_hit_tokens: 896, prompt_cache_miss_tokens: 104, completion_tokens_details: { reasoning_tokens: 5 } };

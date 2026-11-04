@@ -1,0 +1,28 @@
+appId: app.mountains.desktop
+artifactName: "Mountains-${version}-${os}-${arch}.${ext}"
+publish:
+  provider: generic
+  url: https://updates.cnsai.top/desktop/
+productName: Mountains
+directories:
+  output: release
+files:
+  - dist/**
+  - package.json
+asar: true
+asarUnpack:
+  - "**/*.node"
+icon: build/icon.png
+mac:
+  identity: "-"
+  icon: build/icon.icns
+  target:
+    - dmg
+  category: public.app-category.developer-tools
+win:
+  icon: build/icon-win.ico
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

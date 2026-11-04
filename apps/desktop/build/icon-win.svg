@@ -1,0 +1,2 @@
+<!-- Windows icon: same star as renderer/icons.tsx; transparent canvas. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path transform="translate(4 4)" d="M11.60 1.30Q 12.00 0.50 12.40 1.30C 13.00 6.60 15.60 10.90 22.70 11.60Q 23.50 12.00 22.70 12.40C 15.60 13.10 13.00 17.40 12.40 22.70Q 12.00 23.50 11.60 22.70C 11.00 17.40 8.40 13.10 1.30 12.40Q 0.50 12.00 1.30 11.60C 8.40 10.90 11.00 6.60 11.60 1.30Z" fill="white"/></svg>

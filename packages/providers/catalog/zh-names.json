@@ -1,0 +1,372 @@
+{
+  "说明": "模型目录的补充数据（2026-10-24）。中文叫法来自 Grok 调研；人民币价格只有 verifiedCny 里的经过核对（与 Mountains 代码里从官方页核实的价目表一致），其余是 Grok 给的、未核实，只能当参考，不能直接用来计费。没有可信人民币价的模型，用 models.dev 的美元价。",
+  "vendors": [
+    {
+      "vendorZh": "深度求索",
+      "modelsDevProviders": [
+        "deepseek"
+      ],
+      "keywords": [
+        "deepseek",
+        "ds",
+        "深度求索",
+        "v4.1",
+        "v4",
+        "flash",
+        "pro"
+      ]
+    },
+    {
+      "vendorZh": "月之暗面",
+      "modelsDevProviders": [
+        "moonshotai",
+        "moonshotai-cn",
+        "kimi-code-plan-cn",
+        "kimi-code-plan-global"
+      ],
+      "keywords": [
+        "kimi",
+        "月之暗面",
+        "moonshot",
+        "k3",
+        "k3.1",
+        "k2.6",
+        "k2.7"
+      ]
+    },
+    {
+      "vendorZh": "智谱AI",
+      "modelsDevProviders": [
+        "zhipuai",
+        "zai",
+        "zhipuai-coding-plan",
+        "zai-coding-plan"
+      ],
+      "keywords": [
+        "glm",
+        "智谱",
+        "zhipu",
+        "智谱glm",
+        "z.ai"
+      ]
+    },
+    {
+      "vendorZh": "阿里通义千问（百炼）",
+      "modelsDevProviders": [
+        "alibaba-cn",
+        "alibaba",
+        "alibaba-coding-plan-cn",
+        "alibaba-token-plan-cn"
+      ],
+      "keywords": [
+        "qwen",
+        "通义",
+        "千问",
+        "通义千问",
+        "百炼",
+        "dashscope"
+      ]
+    },
+    {
+      "vendorZh": "字节豆包（火山方舟）",
+      "modelsDevProviders": [
+        "volcengine",
+        "volcengine-coding-plan"
+      ],
+      "keywords": [
+        "doubao",
+        "豆包",
+        "火山方舟",
+        "火山引擎",
+        "seed",
+        "ark"
+      ]
+    },
+    {
+      "vendorZh": "腾讯混元",
+      "modelsDevProviders": [
+        "tencent-tokenhub",
+        "tencent-coding-plan",
+        "tencent-token-plan"
+      ],
+      "keywords": [
+        "hunyuan",
+        "混元",
+        "腾讯混元",
+        "hy3",
+        "hy"
+      ]
+    },
+    {
+      "vendorZh": "MiniMax",
+      "modelsDevProviders": [
+        "minimax-cn",
+        "minimax"
+      ],
+      "keywords": [
+        "minimax",
+        "m3",
+        "海螺"
+      ]
+    },
+    {
+      "vendorZh": "阶跃星辰",
+      "modelsDevProviders": [
+        "stepfun",
+        "stepfun-ai"
+      ],
+      "keywords": [
+        "stepfun",
+        "阶跃",
+        "阶跃星辰",
+        "step"
+      ]
+    },
+    {
+      "vendorZh": "硅基流动",
+      "modelsDevProviders": [
+        "siliconflow-cn",
+        "siliconflow"
+      ],
+      "keywords": [
+        "siliconflow",
+        "硅基流动",
+        "硅基"
+      ]
+    },
+    {
+      "vendorZh": "百度文心（千帆）",
+      "modelsDevProviders": [],
+      "keywords": [
+        "ernie",
+        "文心",
+        "文心一言",
+        "百度",
+        "千帆",
+        "wenxin"
+      ]
+    },
+    {
+      "vendorZh": "讯飞星火",
+      "modelsDevProviders": [],
+      "keywords": [
+        "spark",
+        "星火",
+        "讯飞",
+        "讯飞星火",
+        "xfyun"
+      ]
+    },
+    {
+      "vendorZh": "OpenAI",
+      "modelsDevProviders": [
+        "openai"
+      ],
+      "keywords": [
+        "gpt",
+        "chatgpt",
+        "openai",
+        "o3",
+        "o4"
+      ]
+    },
+    {
+      "vendorZh": "Anthropic",
+      "modelsDevProviders": [
+        "anthropic"
+      ],
+      "keywords": [
+        "claude",
+        "克劳德",
+        "anthropic",
+        "sonnet",
+        "opus",
+        "haiku"
+      ]
+    },
+    {
+      "vendorZh": "Google",
+      "modelsDevProviders": [
+        "google"
+      ],
+      "keywords": [
+        "gemini",
+        "谷歌",
+        "google",
+        "双子座",
+        "ai studio"
+      ]
+    },
+    {
+      "vendorZh": "xAI",
+      "modelsDevProviders": [
+        "xai"
+      ],
+      "keywords": [
+        "grok",
+        "xai",
+        "格罗克"
+      ]
+    },
+    {
+      "vendorZh": "Mistral",
+      "modelsDevProviders": [
+        "mistral"
+      ],
+      "keywords": [
+        "mistral",
+        "米斯特拉尔"
+      ]
+    },
+    {
+      "vendorZh": "Meta",
+      "modelsDevProviders": [],
+      "keywords": [
+        "llama",
+        "meta",
+        "羊驼"
+      ]
+    }
+  ],
+  "verifiedCny": {
+    "deepseek/deepseek-flash": {
+      "note": "与代码 pricing.ts 一致",
+      "offPeak": {
+        "cachedInput": 0.02,
+        "input": 1,
+        "output": 4
+      },
+      "peak": {
+        "cachedInput": 0.04,
+        "input": 2,
+        "output": 8
+      },
+      "peakHours": "工作日 09:00-12:00、14:00-18:00（法定节假日除外）"
+    },
+    "deepseek/deepseek-v4-pro": {
+      "note": "与代码 pricing.ts 一致",
+      "offPeak": {
+        "cachedInput": 0.15,
+        "input": 4.5,
+        "output": 13.5
+      },
+      "peak": {
+        "cachedInput": 0.3,
+        "input": 9,
+        "output": 27
+      },
+      "peakHours": "同上"
+    },
+    "zhipuai/glm-5.3-flash": {
+      "note": "与代码 pricing.ts 一致",
+      "cachedInput": 0.23,
+      "input": 0.8,
+      "output": 2.8
+    }
+  },
+  "unverifiedCny": {
+    "moonshotai-cn/kimi-k3": {
+      "cachedInput": 2,
+      "input": 20,
+      "output": 100,
+      "why": "官方价格表动态加载，抓不到数字"
+    },
+    "moonshotai-cn/kimi-k3.1-pro": {
+      "cachedInput": 1.3,
+      "input": 13,
+      "output": 68,
+      "why": "同上"
+    },
+    "moonshotai-cn/kimi-k2.6": {
+      "cachedInput": 1.1,
+      "input": 6.5,
+      "output": 27,
+      "why": "同上；K2 系列 12 月底下线"
+    },
+    "zhipuai/glm-5.3": {
+      "cachedInput": 2,
+      "input": 8,
+      "output": 28
+    },
+    "alibaba-cn/qwen3.8-max": {
+      "cachedInput": null,
+      "input": 12,
+      "output": 36,
+      "why": "Grok 把 ID 写成了 alibaba/（国际站）"
+    },
+    "alibaba-cn/qwen-plus": {
+      "tiers": [
+        {
+          "upToTokens": 128000,
+          "input": 0.8,
+          "output": 2
+        },
+        {
+          "upToTokens": 1000000,
+          "input": 2.4,
+          "output": 20
+        }
+      ]
+    },
+    "tencent-tokenhub/hy3": {
+      "cachedInput": 0.25,
+      "input": 1,
+      "output": 4
+    },
+    "minimax-cn/MiniMax-M3": {
+      "cachedInput": 0.42,
+      "input": 2.1,
+      "output": 8.4,
+      "tiers": [
+        {
+          "upToTokens": 512000,
+          "input": 2.1,
+          "output": 8.4
+        },
+        {
+          "upToTokens": null,
+          "input": 4.2,
+          "output": 16.8
+        }
+      ]
+    },
+    "stepfun/step-3.5-flash": {
+      "cachedInput": 0.14,
+      "input": 0.7,
+      "output": 2.1
+    },
+    "stepfun/step-5-preview": {
+      "cachedInput": 0.7,
+      "input": 7,
+      "output": 20
+    },
+    "siliconflow-cn/zai-org/GLM-5.2": {
+      "cachedInput": 2,
+      "input": 8,
+      "output": 28
+    }
+  },
+  "wrongIds": {
+    "volcengine/doubao-seed-2.1-pro": "models.dev 里只有 doubao-seed-2-0-*，2.1 是否存在未确认",
+    "volcengine/doubao-seed-2.1-lite": "同上",
+    "xai/grok-4": "models.dev 里是 grok-4.5、grok-4.7",
+    "mistral/mistral-large": "models.dev 里是 mistral-large-4",
+    "meta/llama-3.1-405b": "models.dev 没有 meta 这个供应商"
+  },
+  "notInModelsDev": {
+    "baidu/ernie-5.1": {
+      "baseUrl": "https://qianfan.baidubce.com/v2",
+      "cnyUnverified": {
+        "input": 4,
+        "output": 18
+      }
+    },
+    "iflytek/spark-x2": {
+      "baseUrl": "https://spark-api.xf-yun.com",
+      "cnyUnverified": {
+        "input": 2,
+        "output": 2
+      }
+    }
+  }
+}

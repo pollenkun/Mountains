@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "status": "draft-for-independent-review",
+  "cases": [
+    {
+      "id": 1,
+      "title": "软件自测：中文、emoji与保存",
+      "group": "native",
+      "deadlineMs": 90000,
+      "maxToolCalls": 10,
+      "task": "在新编译的本机测试软件填写中英混合内容、选项并保存。",
+      "independentCheck": "软件独立写出的JSON逐字段相等；另一个窗口未改变。"
+    },
+    {
+      "id": 2,
+      "title": "软件自测：边界与报错恢复",
+      "group": "native",
+      "deadlineMs": 90000,
+      "maxToolCalls": 12,
+      "task": "提交缺失姓名、数量0和10，分别核对错误；再以数量1和9各保存一次。",
+      "independentCheck": "三个错误均无保存；两个边界值保存记录各一次，字段精确相等。"
+    },
+    {
+      "id": 3,
+      "title": "软件自测：快捷键与批量动作",
+      "group": "native",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "同一新建文档分别单步和steps完成相同编辑、快捷键保存。",
+      "independentCheck": "两份文件逐字相同；没有多打快捷键字母；修饰键全部释放。"
+    },
+    {
+      "id": 4,
+      "title": "软件自测：列表换位与旧元素",
+      "group": "native",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "先勾选 Alpha receipt，再从重排后的列表读取并勾选 Beta receipt；保留 Gamma receipt 未完成。根据刚读到的界面选控件，不要求故意重发旧快照。",
+      "independentCheck": "只改变指定两项、顺序正确、相邻条目未变。故意重发旧快照由单列技术检查负责。"
+    },
+    {
+      "id": 5,
+      "title": "软件自测：多窗口和对话框",
+      "group": "native",
+      "deadlineMs": 150000,
+      "maxToolCalls": 18,
+      "task": "在两个同名窗口分别写入不同内容，打开保存对话框并取消。",
+      "independentCheck": "两个窗口内容各自正确；取消后无新增文件；窗口身份不混用。"
+    },
+    {
+      "id": 6,
+      "title": "Web自测：表单校验与提交",
+      "group": "web",
+      "deadlineMs": 90000,
+      "maxToolCalls": 12,
+      "task": "在新写的本地网页验证空字段，再填写姓名、下拉框和复选框提交。",
+      "independentCheck": "独立HTTP服务收到唯一有效记录；页面读回同样内容。"
+    },
+    {
+      "id": 7,
+      "title": "Web自测：加载失败、重试与取消",
+      "group": "web",
+      "deadlineMs": 120000,
+      "maxToolCalls": 15,
+      "task": "触发一次失败请求，重试成功，再取消一项延迟操作。这里只测页面取消；工具请求取消属于另列的强制技术检查。",
+      "independentCheck": "服务器请求日志和页面状态一致；取消的操作不写入完成记录。"
+    },
+    {
+      "id": 8,
+      "title": "Web自测：新增、编辑和删除",
+      "group": "web",
+      "deadlineMs": 150000,
+      "maxToolCalls": 18,
+      "task": "新增两条自己的任务，修改其中一条，排序后删除指定条目。",
+      "independentCheck": "服务端数据准确保留另一条；没有修改相邻条目。"
+    },
+    {
+      "id": 9,
+      "title": "Web自测：筛选与分页",
+      "group": "web",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "在多页记录中找到指定项，筛选后编辑，再清除筛选。",
+      "independentCheck": "服务端仅目标ID改变；页码、筛选和清除后的数量正确。"
+    },
+    {
+      "id": 10,
+      "title": "Web自测：路由、弹窗与状态保留",
+      "group": "web",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "从其他页面进入详情；HTML弹层修改并保存；JavaScript确认先取消再接受，随后处理alert；返回并刷新，再打开编辑用Escape取消。测试延时window.focus时也不得抢全局焦点。",
+      "independentCheck": "取消确认时服务端不变；接受后唯一写入，alert可读可关闭；刷新后保留，Escape后原值保持；无页面脚本异常。"
+    },
+    {
+      "id": 11,
+      "title": "办公：纯文本编辑并保存",
+      "group": "office",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "新建纯文本，输入 Mountains daily 你好 alpha 🌍，将alpha改成beta并保存。",
+      "independentCheck": "直接读取本轮文件，内容精确等于 Mountains daily 你好 beta 🌍。"
+    },
+    {
+      "id": 12,
+      "title": "办公：备忘录新建、修改和删除",
+      "group": "office",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "在自己的测试文件夹新建两行笔记，改第二行，核对后删除。",
+      "independentCheck": "独立读取窗口正文正确；删除后自己的笔记消失，原有笔记不变。"
+    },
+    {
+      "id": 13,
+      "title": "办公：访达建文件夹、改名和移动",
+      "group": "office",
+      "deadlineMs": 150000,
+      "maxToolCalls": 18,
+      "task": "在本轮目录新建文件夹，改名为已改名，将move-me.txt移入。",
+      "independentCheck": "原路径消失，目标路径存在，文件SHA256与初始值相同。"
+    },
+    {
+      "id": 14,
+      "title": "办公：预览旋转并保存图片",
+      "group": "office",
+      "deadlineMs": 90000,
+      "maxToolCalls": 8,
+      "task": "打开本轮320x160图片，向左旋转并存储。",
+      "independentCheck": "独立读取PNG尺寸变为160x320，解码像素与预期旋转一致。"
+    },
+    {
+      "id": 15,
+      "title": "办公：测试日历与事件修改",
+      "group": "office",
+      "deadlineMs": 240000,
+      "maxToolCalls": 32,
+      "task": "新建自己的测试日历和下周事件，修改时间，重新打开核对，再删除本轮事件和日历。",
+      "independentCheck": "重新读取持久化起止时间；仅本轮对象被删除，原有日历保持。"
+    },
+    {
+      "id": 16,
+      "title": "办公：提醒事项列表与完成状态",
+      "group": "office",
+      "deadlineMs": 210000,
+      "maxToolCalls": 26,
+      "task": "新建列表加买牛奶、交周报、留着，勾选前两项，显示已完成后核对并删除。",
+      "independentCheck": "独立读取三条真实状态为完成、完成、未完成；确认删除的列表名称准确。"
+    },
+    {
+      "id": 17,
+      "title": "办公：富文本文档与PDF导出",
+      "group": "office",
+      "deadlineMs": 180000,
+      "maxToolCalls": 22,
+      "task": "新建富文本文档，加入标题和三行三列表格，保存源文件并导出PDF。",
+      "independentCheck": "独立解析PDF标题及九格内容，渲染检查表格无缺行；源文件存在；剪贴板恢复。"
+    },
+    {
+      "id": 18,
+      "title": "办公：只读系统信息",
+      "group": "office",
+      "deadlineMs": 60000,
+      "maxToolCalls": 5,
+      "task": "在系统设置的关于本机读取macOS版本。",
+      "independentCheck": "窗口版本与sw_vers一致；无设置写操作。"
+    },
+    {
+      "id": 19,
+      "title": "办公：跨应用搬运与核对",
+      "group": "office",
+      "deadlineMs": 120000,
+      "maxToolCalls": 14,
+      "task": "重新读取第11项文档及测试软件本轮生成的随机回执，把实际读到的内容写进新备忘录，核对后删除。",
+      "independentCheck": "来源窗口、文件和备忘录的实际读取内容逐字相等；至少包含一段运行时才生成、未写入提示词的随机回执。"
+    },
+    {
+      "id": 20,
+      "title": "联调自测：软件与Web随机回执对账",
+      "group": "integration",
+      "deadlineMs": 180000,
+      "maxToolCalls": 22,
+      "task": "在本机测试软件新建并保存case20-source，读取新生成的随机回执、数量和正文，填入Web对账页；返回软件点击核对，读回匹配结果。",
+      "independentCheck": "本机保存文件、服务端唯一对账记录逐字段相等；随机回执不同于前一项；软件重新请求服务后显示恰好一次匹配。"
+    }
+  ],
+  "gates": {
+    "accuracy": "20/20逐项独立核对；自动检查无失败；Codex与DeepSeek各自真实完成全部20项。",
+    "background": "从进程启动至关闭持续记录前台、键盘焦点和真实指针。任何由模型或测试软件引起的瞬时抢占均失败，恢复也失败；用户自己的切换单独记录，不回拉。监测缺失或无法归因不算通过。",
+    "speed": {
+      "perCase": "包括模型思考、工具、重试及独立核对；按各项预先规定的deadlineMs和maxToolCalls验收。",
+      "suiteDeadlineMs": 1800000,
+      "warmReadP95Ms": 1500,
+      "ordinaryActionP95Ms": 4000,
+      "wastedCallRatioMax": 0.1,
+      "p95Population": "每轮全部热读取和普通动作，至少各30个样本；包含失败/重试，单步steps按底层动作同时记。冷启动、明确等待软件异步结果单列，仍计入本项和整轮时间。",
+      "wastedCallDefinition": "错误参数、未先读导致的拒绝、未核对就重复已发送动作、没有新信息的重复全量读取；事先规定的安全拒绝用例不是浪费。",
+      "expectedToolCalls": 220,
+      "expectedSuiteMs": 1200000
+    },
+    "economy": {
+      "totalModelBudgetCNY": 5,
+      "scope": "沿用本对话已有5元累计上限，包含上一轮付费实测及所有审批与重试，不重置账本。启动、清理、模型审批和失败尝试都计入；工具调用的单项上限是封顶，不是预留，仍受整轮300次/30分钟总上限约束。",
+      "walletReserveCNY": 10,
+      "modelToolCallsMax": 300,
+      "noScreenshotsByDefault": true,
+      "skillCharactersMax": 2500
+    },
+    "integrity": "失败保存证据后修产品，版本变化后复测受影响项目并重新完整验收；不得删失败记录、降低门槛或以回放冒充模型真跑。"
+  },
+  "boundaries": [
+    "仅本轮新建文件、备忘录、日历、列表和本机测试软件；原有数据不修改。",
+    "目标软件/Web必须由本仓库新编译/启动，UI操作只用Mountains自己的screen/web工具。",
+    "测试软件独立写状态，HTTP服务独立记请求；验证器只读产物，不代替UI完成任务。",
+    "不写固定UI流程脚本；模型或主代理逐次读取真实结果再决定下一步。",
+    "禁止bring_to_front、真实全局指针拖动、全局事件注入和用户Chrome/Safari配置；不提交不推送。",
+    "剪贴板每次审批；自动测试脚本逐次代答且明确记日志，不作为用户持续授权。使用前备份，恢复时保留用户更新。",
+    "真实硬件并行使用仅在确实观察到时报告，不能用合成事件冒充用户；并发技术检查是独立工具客户，不是伪造真人。",
+    "冻结任务、测试软件源码/二进制、本地服务和独立验证器的哈希。审计所有模型命令；禁止直接写期望产物或服务状态来代替UI操作。"
+  ],
+  "mandatoryTechnicalChecks": [
+    "两个独立原生工具客户同时操作不同窗口，结果各自正确；同一窗口旧快照必须被拒绝，不得继续发送输入。",
+    "同页Web两个字段并发不得串写；共享Chrome启动者先退出不得打断其他客户，最后一个退出后关闭精确的自有浏览器。",
+    "控制器在原生输入、网页输入、冷连接、建标签页和关闭期间取消：新动作停止，已发动作准确记录；真实修饰键、剪贴板恢复。由控制器注入，不冒称模型从UI执行。",
+    "真实Chrome处理连续与替换的JS确认框；旧确认框的编号不得接受新确认框。页面延时focus/window.open与Chrome完整启停期间均不得抢用户前台。",
+    "正常CLI结束、异常与一次取消都等待资源关闭；检查无本轮残留Chrome、输入辅助进程或未释放成员。",
+    "原生焦点监测和独立AX通知/20毫秒采样记录一致；检测间断或无法归因不能判通过。",
+    "控制器重发实际旧快照和旧编号；必须在输入前拒绝，重新读取后仍可正常操作。"
+  ]
+}
